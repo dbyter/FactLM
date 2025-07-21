@@ -6,6 +6,7 @@ from factlm_model import FactLM
 import re
 import glob
 import os
+from datetime import datetime
 
 def train_model(model, train_data, val_data, epochs, batch_size, learning_rate, device):
     model.to(device)
@@ -158,7 +159,7 @@ def load_all_books(data_dir='data'):
     combined_text = combined_text.strip()
     print(f"Total combined text: {len(combined_text)} characters")
     
-    return combined_text
+    return combined_text, book_files
 
 
 def prepare_book_data(book_text, tokenizer, train_split=0.8):
@@ -195,12 +196,90 @@ def prepare_book_data(book_text, tokenizer, train_split=0.8):
     return train_data, val_data
 
 
+def save_model(model, tokenizer, model_config, training_stats, device_name):
+    """Save the trained model with UTC timestamp and metadata"""
+    # Create models directory if it doesn't exist
+    os.makedirs('models', exist_ok=True)
+    
+    # Generate UTC timestamp
+    utc_timestamp = datetime.utcnow().strftime('%Y%m%d_%H%M%S_UTC')
+    model_filename = f"factlm_model_{utc_timestamp}.pth"
+    metadata_filename = f"factlm_metadata_{utc_timestamp}.txt"
+    
+    model_path = os.path.join('models', model_filename)
+    metadata_path = os.path.join('models', metadata_filename)
+    
+    # Save model state dict
+    torch.save({
+        'model_state_dict': model.state_dict(),
+        'model_config': model_config,
+        'timestamp_utc': utc_timestamp,
+        'device_used': device_name,
+        'vocab_size': tokenizer.vocab_size
+    }, model_path)
+    
+    # Save training metadata
+    with open(metadata_path, 'w') as f:
+        f.write(f"FactLM Model Training Report\n")
+        f.write(f"=" * 40 + "\n\n")
+        f.write(f"Timestamp (UTC): {utc_timestamp}\n")
+        f.write(f"Device Used: {device_name}\n")
+        f.write(f"Model File: {model_filename}\n\n")
+        
+        f.write(f"Model Configuration:\n")
+        f.write(f"- Vocabulary Size: {model_config['vocab_size']:,}\n")
+        f.write(f"- Model Dimension: {model_config['d_model']}\n")
+        f.write(f"- Hidden Size: {model_config['hidden_size']}\n")
+        f.write(f"- Number of Layers: {model_config['num_layers']}\n")
+        f.write(f"- Dropout: {model_config['dropout']}\n")
+        f.write(f"- Max Length: {model_config['max_len']}\n\n")
+        
+        f.write(f"Training Configuration:\n")
+        f.write(f"- Epochs: {training_stats['epochs']}\n")
+        f.write(f"- Batch Size: {training_stats['batch_size']}\n")
+        f.write(f"- Learning Rate: {training_stats['learning_rate']}\n")
+        f.write(f"- Training Tokens: {training_stats['train_tokens']:,}\n")
+        f.write(f"- Validation Tokens: {training_stats['val_tokens']:,}\n")
+        f.write(f"- Total Parameters: {training_stats['total_params']:,}\n\n")
+        
+        if 'book_files' in training_stats:
+            f.write(f"Training Data:\n")
+            for book_file in training_stats['book_files']:
+                f.write(f"- {book_file}\n")
+    
+    print(f"✅ Model saved: {model_path}")
+    print(f"✅ Metadata saved: {metadata_path}")
+    
+    return model_path, metadata_path
+
+
+def load_saved_model(model_path, tokenizer):
+    """Load a previously saved model"""
+    checkpoint = torch.load(model_path, map_location='cpu')
+    
+    # Extract model configuration
+    model_config = checkpoint['model_config']
+    
+    # Initialize model with saved configuration
+    model = FactLM(**model_config)
+    
+    # Load the trained weights
+    model.load_state_dict(checkpoint['model_state_dict'])
+    
+    print(f"✅ Model loaded from: {model_path}")
+    print(f"   - Trained on: {checkpoint['timestamp_utc']}")
+    print(f"   - Device used: {checkpoint['device_used']}")
+    print(f"   - Vocabulary size: {checkpoint['vocab_size']:,}")
+    
+    return model, checkpoint
+
+
 # Example usage and data setup
 if __name__ == "__main__":
     print("Loading and processing book data...")
     
     # Load all books
-    book_text = load_all_books('data')
+    book_text, book_files = load_all_books('data')
     print(f"Sample text: {book_text[:200]}...")
     
     # Create Hugging Face tokenizer (using GPT-2 tokenizer)
@@ -225,13 +304,16 @@ if __name__ == "__main__":
     
     # Initialize model
     print("Initializing model...")
-    model = FactLM(
-        vocab_size=tokenizer.vocab_size,
-        hidden_size=256,
-        num_layers=4,
-        dropout=0.1,
-        d_model=512
-    )
+    model_config = {
+        'vocab_size': tokenizer.vocab_size,
+        'hidden_size': 256,
+        'num_layers': 4,
+        'dropout': 0.2,
+        'd_model': 1024,
+        'max_len': 5000
+    }
+    
+    model = FactLM(**model_config)
     
     # Training parameters - automatically select best available device
     device = None
@@ -264,8 +346,8 @@ if __name__ == "__main__":
         device_name = "CPU"
         print("Using CPU as fallback")
     
-    epochs = 10  # Reduced for larger dataset
-    batch_size = 64  # Increased batch size for efficiency
+    epochs = 20  # Reduced for larger dataset
+    batch_size = 128  # Increased batch size for efficiency
     learning_rate = 0.0005  # Slightly lower for larger dataset
     
     print(f"Using device: {device} ({device_name})")
@@ -273,14 +355,36 @@ if __name__ == "__main__":
     
     # Train the model
     print("Starting training...")
+    
+    # Collect training statistics
+    training_stats = {
+        'epochs': epochs,
+        'batch_size': batch_size,
+        'learning_rate': learning_rate,
+        'train_tokens': len(training_data),
+        'val_tokens': len(validation_data),
+        'total_params': sum(p.numel() for p in model.parameters()),
+        'book_files': book_files
+    }
+    
     trained_model = train_model(
         model=model,
         train_data=training_data,
         val_data=validation_data,
         epochs=epochs,
-        batch_size=batch_size,
+        batch_size=batch_size, 
         learning_rate=learning_rate,
         device=device
+    )
+    
+    # Save the trained model
+    print("\nSaving trained model...")
+    model_path, metadata_path = save_model(
+        model=trained_model,
+        tokenizer=tokenizer,
+        model_config=model_config,
+        training_stats=training_stats,
+        device_name=device_name
     )
     
     # Generate some text

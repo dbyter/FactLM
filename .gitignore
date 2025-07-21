@@ -33,7 +33,8 @@ venv.bak/
 *.pth
 *.pt
 checkpoints/
-models/
+models/*.pth
+models/*.txt
 *.pkl
 
 # Jupyter Notebook
