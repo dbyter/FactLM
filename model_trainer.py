@@ -498,10 +498,10 @@ if __name__ == "__main__":
     # Generate some text
     print("\nGenerating text...")
     test_prompts = [
-        "I am",
-        "Where is",
-        "What is",
-        "Who is"
+        "Who are you?",
+        "What are you doing here?",
+        "Where did you come from?",
+        "Who is your creator?",
     ]
     
     for prompt in test_prompts:
