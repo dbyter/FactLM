@@ -10,13 +10,14 @@ import os
 import math
 from datetime import datetime
 
-def train_model(model, train_data, val_data, epochs, batch_size, learning_rate, device, max_grad_norm=1.0):
+def train_model(model, train_data, val_data, epochs, batch_size, sequence_length, learning_rate, device, max_grad_norm=1.0):
     model.to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=0.01)
     
     # Learning rate scheduler with warmup
-    warmup_steps = len(train_data) // batch_size // 10  # 10% of first epoch for warmup
-    total_steps = (len(train_data) // batch_size) * epochs
+    steps_per_epoch = len(train_data) // (batch_size * sequence_length)
+    warmup_steps = steps_per_epoch // 10  # 10% of first epoch for warmup
+    total_steps = steps_per_epoch * epochs
     
     def lr_lambda(step):
         if step < warmup_steps:
@@ -36,18 +37,26 @@ def train_model(model, train_data, val_data, epochs, batch_size, learning_rate, 
         num_batches = 0
         total_grad_norm = 0
         
-        # Better batching strategy - create proper sequences
-        for i in range(0, len(train_data) - batch_size - 1, batch_size):
-            # Create proper input-target pairs
-            inputs = train_data[i:i+batch_size].unsqueeze(0)  # Shape: [1, batch_size]
-            targets = train_data[i+1:i+batch_size+1]  # Shape: [batch_size]
+        # Create proper sequence batches for better GPU utilization
+        for i in range(0, len(train_data) - sequence_length * batch_size, sequence_length * batch_size):
+            # Reshape data into [batch_size, sequence_length]
+            batch_data = train_data[i:i + sequence_length * batch_size]
+            
+            if len(batch_data) < sequence_length * batch_size:
+                continue  # Skip incomplete batches
+                
+            inputs = batch_data[:-batch_size].view(batch_size, sequence_length)
+            targets = batch_data[batch_size:].view(batch_size, sequence_length)
 
             inputs = inputs.to(device)
             targets = targets.to(device)
 
             optimizer.zero_grad()
-            outputs = model(inputs)  # Shape: [1, batch_size, vocab_size]
-            outputs = outputs.squeeze(0)  # Shape: [batch_size, vocab_size]
+            outputs = model(inputs)  # Shape: [batch_size, sequence_length, vocab_size]
+            
+            # Flatten for loss calculation
+            outputs = outputs.view(-1, outputs.size(-1))  # [batch_size * sequence_length, vocab_size]
+            targets = targets.view(-1)  # [batch_size * sequence_length]
             
             loss = criterion(outputs, targets)
             loss.backward()
@@ -74,15 +83,22 @@ def train_model(model, train_data, val_data, epochs, batch_size, learning_rate, 
             val_loss = 0
             val_batches = 0
             
-            for i in range(0, len(val_data) - batch_size - 1, batch_size):
-                inputs = val_data[i:i+batch_size].unsqueeze(0)
-                targets = val_data[i+1:i+batch_size+1]
+            for i in range(0, len(val_data) - sequence_length * batch_size, sequence_length * batch_size):
+                batch_data = val_data[i:i + sequence_length * batch_size]
+                
+                if len(batch_data) < sequence_length * batch_size:
+                    continue
+                    
+                inputs = batch_data[:-batch_size].view(batch_size, sequence_length)
+                targets = batch_data[batch_size:].view(batch_size, sequence_length)
 
                 inputs = inputs.to(device)
                 targets = targets.to(device)
 
                 outputs = model(inputs)
-                outputs = outputs.squeeze(0)
+                outputs = outputs.view(-1, outputs.size(-1))
+                targets = targets.view(-1)
+                
                 loss = criterion(outputs, targets)
                 val_loss += loss.item()
                 val_batches += 1
@@ -274,6 +290,8 @@ def save_model(model, tokenizer, model_config, training_stats, device_name):
         f.write(f"Training Configuration:\n")
         f.write(f"- Epochs: {training_stats['epochs']}\n")
         f.write(f"- Batch Size: {training_stats['batch_size']}\n")
+        f.write(f"- Sequence Length: {training_stats['sequence_length']}\n")
+        f.write(f"- Effective Batch Size: {training_stats['batch_size'] * training_stats['sequence_length']:,} tokens\n")
         f.write(f"- Learning Rate: {training_stats['learning_rate']}\n")
         f.write(f"- Optimizer: AdamW with weight decay 0.01\n")
         f.write(f"- LR Schedule: Warmup + Cosine Decay\n")
@@ -388,12 +406,20 @@ if __name__ == "__main__":
         print("Using CPU as fallback")
     
     epochs = 20  # Reduced for larger dataset
-    batch_size = 32  # Smaller batch size for better generalization
+    batch_size = 256  # Much larger batch size for A10G GPU utilization  
+    sequence_length = 512  # Longer sequences for better context
     learning_rate = 0.01  # Higher learning rate with warmup scheduling
     max_grad_norm = 5.0  # Gradient clipping threshold
     
     print(f"Using device: {device} ({device_name})")
     print(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
+    print(f"Batch configuration: {batch_size} sequences × {sequence_length} tokens = {batch_size * sequence_length:,} tokens per batch")
+    
+    estimated_memory_mb = (batch_size * sequence_length * model_config['d_model'] * 4) // (1024**2)
+    print(f"Estimated GPU memory usage: ~{estimated_memory_mb}MB per batch")
+    
+    if estimated_memory_mb > 8000:  # More than 8GB per batch
+        print("⚠️  High memory usage detected! If you get OOM errors, reduce batch_size or sequence_length")
     
     # Train the model
     print("Starting training...")
@@ -402,6 +428,7 @@ if __name__ == "__main__":
     training_stats = {
         'epochs': epochs,
         'batch_size': batch_size,
+        'sequence_length': sequence_length,
         'learning_rate': learning_rate,
         'max_grad_norm': max_grad_norm,
         'train_tokens': len(training_data),
@@ -416,6 +443,7 @@ if __name__ == "__main__":
         val_data=validation_data,
         epochs=epochs,
         batch_size=batch_size,
+        sequence_length=sequence_length,
         learning_rate=learning_rate,
         device=device,
         max_grad_norm=max_grad_norm
