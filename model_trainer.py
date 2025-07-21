@@ -233,13 +233,22 @@ if __name__ == "__main__":
         d_model=512
     )
     
-    # Training parameters
-    device = torch.device("mps")
+    # Training parameters - automatically select best available device
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+        device_name = "CUDA (NVIDIA GPU)"
+    elif torch.backends.mps.is_available():
+        device = torch.device("mps")
+        device_name = "MPS (Apple Silicon)"
+    else:
+        device = torch.device("cpu")
+        device_name = "CPU"
+    
     epochs = 10  # Reduced for larger dataset
     batch_size = 64  # Increased batch size for efficiency
     learning_rate = 0.0005  # Slightly lower for larger dataset
     
-    print(f"Using device: {device}")
+    print(f"Using device: {device} ({device_name})")
     print(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
     
     # Train the model
