@@ -16,14 +16,35 @@ def train_model(model, train_data, val_data, epochs, batch_size, sequence_length
     
     # Learning rate scheduler with warmup
     steps_per_epoch = len(train_data) // (batch_size * sequence_length)
-    warmup_steps = steps_per_epoch // 10  # 10% of first epoch for warmup
+    
+    # Ensure we have enough steps for proper scheduling
+    if steps_per_epoch < 1:
+        print(f"⚠️  Dataset too small for current batch config!")
+        print(f"   Data tokens: {len(train_data):,}")
+        print(f"   Tokens per batch: {batch_size * sequence_length:,}")
+        print(f"   Steps per epoch: {steps_per_epoch}")
+        print(f"   Reducing batch size to make training possible...")
+        
+        # Auto-adjust batch size to have at least 10 steps per epoch
+        max_batch_tokens = len(train_data) // 10
+        sequence_length = min(sequence_length, 256)  # Cap sequence length
+        batch_size = max(1, max_batch_tokens // sequence_length)
+        
+        print(f"   New config: batch_size={batch_size}, sequence_length={sequence_length}")
+        steps_per_epoch = len(train_data) // (batch_size * sequence_length)
+    
+    warmup_steps = max(1, steps_per_epoch // 10)  # At least 1 warmup step
     total_steps = steps_per_epoch * epochs
+    
+    print(f"Training schedule: {steps_per_epoch} steps/epoch, {warmup_steps} warmup steps, {total_steps} total steps")
     
     def lr_lambda(step):
         if step < warmup_steps:
-            return step / warmup_steps  # Linear warmup
+            return max(0.1, step / warmup_steps)  # Minimum 10% of base LR
         else:
-            # Cosine decay after warmup
+            # Cosine decay after warmup  
+            if total_steps <= warmup_steps:
+                return 1.0  # No decay if no steps after warmup
             progress = (step - warmup_steps) / (total_steps - warmup_steps)
             return 0.5 * (1 + math.cos(progress * math.pi))
     
@@ -109,7 +130,7 @@ def train_model(model, train_data, val_data, epochs, batch_size, sequence_length
         current_lr = scheduler.get_last_lr()[0]
         print(f"Epoch {epoch+1}/{epochs}, Train Loss: {avg_train_loss:.4f}, Val Loss: {avg_val_loss:.4f}, Grad Norm: {avg_grad_norm:.4f}, LR: {current_lr:.6f}")
 
-    return model
+    return model, batch_size, sequence_length
 
 
 def generate_text(model, start_string, max_length, temperature=0.5, tokenizer=None):
@@ -413,7 +434,13 @@ if __name__ == "__main__":
     
     print(f"Using device: {device} ({device_name})")
     print(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
-    print(f"Batch configuration: {batch_size} sequences × {sequence_length} tokens = {batch_size * sequence_length:,} tokens per batch")
+    print(f"Initial batch configuration: {batch_size} sequences × {sequence_length} tokens = {batch_size * sequence_length:,} tokens per batch")
+    
+    # Check if configuration is reasonable for dataset size
+    total_tokens_needed = batch_size * sequence_length
+    if total_tokens_needed > len(training_data) // 2:
+        print(f"⚠️  Batch size may be too large for dataset ({total_tokens_needed:,} tokens per batch vs {len(training_data):,} total tokens)")
+        print("   The training function will auto-adjust if needed...")
     
     estimated_memory_mb = (batch_size * sequence_length * model_config['d_model'] * 4) // (1024**2)
     print(f"Estimated GPU memory usage: ~{estimated_memory_mb}MB per batch")
@@ -437,7 +464,7 @@ if __name__ == "__main__":
         'book_files': book_files
     }
     
-    trained_model = train_model(
+    trained_model, final_batch_size, final_sequence_length = train_model(
         model=model,
         train_data=training_data,
         val_data=validation_data,
@@ -448,6 +475,10 @@ if __name__ == "__main__":
         device=device,
         max_grad_norm=max_grad_norm
     )
+    
+    # Update training stats with final batch configuration
+    training_stats['batch_size'] = final_batch_size
+    training_stats['sequence_length'] = final_sequence_length
     
     # Save the trained model
     print("\nSaving trained model...")
