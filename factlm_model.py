@@ -105,7 +105,7 @@ class FactLM(nn.Module):
         
         self.embedding = nn.Embedding(vocab_size, d_model)
         self.pos_encoder = PositionalEncoding(d_model, max_len)
-        self.encoder_layers = nn.ModuleList([EncoderLayer(d_model, num_heads, dropout) for _ in range(num_layers)])
+        self.encoder_layers = nn.TransformerEncoder(nn.TransformerEncoderLayer(d_model, num_heads, dropout), num_layers) #nn.ModuleList([EncoderLayer(d_model, num_heads, dropout) for _ in range(num_layers)])
         self.fc = nn.Linear(d_model, vocab_size)
 
     def init_hidden(self, batch_size):
