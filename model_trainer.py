@@ -1,6 +1,7 @@
 # Requirements: pip install torch transformers
 import torch
 import torch.nn as nn
+from torch.nn.utils import clip_grad_norm_
 from transformers import AutoTokenizer
 from factlm_model import FactLM
 import re
@@ -8,7 +9,7 @@ import glob
 import os
 from datetime import datetime
 
-def train_model(model, train_data, val_data, epochs, batch_size, learning_rate, device):
+def train_model(model, train_data, val_data, epochs, batch_size, learning_rate, device, max_grad_norm=1.0):
     model.to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
     criterion = nn.NLLLoss()  # Use NLLLoss since model outputs log_softmax
@@ -17,6 +18,7 @@ def train_model(model, train_data, val_data, epochs, batch_size, learning_rate, 
         model.train()
         total_loss = 0
         num_batches = 0
+        total_grad_norm = 0
         
         for i in range(0, len(train_data) - batch_size, batch_size):
             inputs = train_data[i:i+batch_size].unsqueeze(0)  # Add batch dimension
@@ -31,6 +33,11 @@ def train_model(model, train_data, val_data, epochs, batch_size, learning_rate, 
             
             loss = criterion(outputs, targets)
             loss.backward()
+            
+            # Gradient clipping
+            grad_norm = clip_grad_norm_(model.parameters(), max_grad_norm)
+            total_grad_norm += grad_norm.item()
+            
             optimizer.step()
             total_loss += loss.item()
             num_batches += 1
@@ -56,7 +63,8 @@ def train_model(model, train_data, val_data, epochs, batch_size, learning_rate, 
 
         avg_train_loss = total_loss / num_batches if num_batches > 0 else 0
         avg_val_loss = val_loss / val_batches if val_batches > 0 else 0
-        print(f"Epoch {epoch+1}/{epochs}, Train Loss: {avg_train_loss:.4f}, Val Loss: {avg_val_loss:.4f}")
+        avg_grad_norm = total_grad_norm / num_batches if num_batches > 0 else 0
+        print(f"Epoch {epoch+1}/{epochs}, Train Loss: {avg_train_loss:.4f}, Val Loss: {avg_val_loss:.4f}, Grad Norm: {avg_grad_norm:.4f}")
 
     return model
 
@@ -231,6 +239,8 @@ def save_model(model, tokenizer, model_config, training_stats, device_name):
         f.write(f"- Model Dimension: {model_config['d_model']}\n")
         f.write(f"- Hidden Size: {model_config['hidden_size']}\n")
         f.write(f"- Number of Layers: {model_config['num_layers']}\n")
+        f.write(f"- Number of Heads: {model_config['num_heads']}\n")
+        f.write(f"- Head Dimension: {model_config['d_model'] // model_config['num_heads']}\n")
         f.write(f"- Dropout: {model_config['dropout']}\n")
         f.write(f"- Max Length: {model_config['max_len']}\n\n")
         
@@ -310,7 +320,8 @@ if __name__ == "__main__":
         'num_layers': 4,
         'dropout': 0.2,
         'd_model': 1024,
-        'max_len': 5000
+        'max_len': 5000,
+        'num_heads': 16  # 1024 / 16 = 64 head dimension (good for your d_model=1024)
     }
     
     model = FactLM(**model_config)
@@ -349,6 +360,7 @@ if __name__ == "__main__":
     epochs = 20  # Reduced for larger dataset
     batch_size = 128  # Increased batch size for efficiency
     learning_rate = 0.0005  # Slightly lower for larger dataset
+    max_grad_norm = 5.0  # Gradient clipping threshold
     
     print(f"Using device: {device} ({device_name})")
     print(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
@@ -361,6 +373,7 @@ if __name__ == "__main__":
         'epochs': epochs,
         'batch_size': batch_size,
         'learning_rate': learning_rate,
+        'max_grad_norm': max_grad_norm,
         'train_tokens': len(training_data),
         'val_tokens': len(validation_data),
         'total_params': sum(p.numel() for p in model.parameters()),
@@ -372,9 +385,10 @@ if __name__ == "__main__":
         train_data=training_data,
         val_data=validation_data,
         epochs=epochs,
-        batch_size=batch_size, 
+        batch_size=batch_size,
         learning_rate=learning_rate,
-        device=device
+        device=device,
+        max_grad_norm=max_grad_norm
     )
     
     # Save the trained model
