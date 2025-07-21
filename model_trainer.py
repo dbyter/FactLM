@@ -12,7 +12,7 @@ from datetime import datetime
 
 def train_model(model, train_data, val_data, epochs, batch_size, sequence_length, learning_rate, device, max_grad_norm=1.0):
     model.to(device)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=0.01)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=0.1, betas=(0.9, 0.95))
     
     # Learning rate scheduler with warmup
     steps_per_epoch = len(train_data) // (batch_size * sequence_length)
@@ -33,10 +33,15 @@ def train_model(model, train_data, val_data, epochs, batch_size, sequence_length
         print(f"   New config: batch_size={batch_size}, sequence_length={sequence_length}")
         steps_per_epoch = len(train_data) // (batch_size * sequence_length)
     
-    warmup_steps = max(1, steps_per_epoch // 10)  # At least 1 warmup step
+    warmup_steps = max(10, steps_per_epoch // 4)  # More warmup steps, at least 10
     total_steps = steps_per_epoch * epochs
     
     print(f"Training schedule: {steps_per_epoch} steps/epoch, {warmup_steps} warmup steps, {total_steps} total steps")
+    
+    # Early stopping variables
+    best_val_loss = float('inf')
+    patience = 5
+    patience_counter = 0
     
     def lr_lambda(step):
         if step < warmup_steps:
@@ -133,7 +138,19 @@ def train_model(model, train_data, val_data, epochs, batch_size, sequence_length
         avg_val_loss = val_loss / val_batches if val_batches > 0 else 0
         avg_grad_norm = total_grad_norm / num_batches if num_batches > 0 else 0
         current_lr = scheduler.get_last_lr()[0]
-        print(f"Epoch {epoch+1}/{epochs}, Train Loss: {avg_train_loss:.4f}, Val Loss: {avg_val_loss:.4f}, Grad Norm: {avg_grad_norm:.4f}, LR: {current_lr:.6f}")
+        
+        # Early stopping check
+        if avg_val_loss < best_val_loss:
+            best_val_loss = avg_val_loss
+            patience_counter = 0
+            print(f"Epoch {epoch+1}/{epochs}, Train Loss: {avg_train_loss:.4f}, Val Loss: {avg_val_loss:.4f}, Grad Norm: {avg_grad_norm:.4f}, LR: {current_lr:.6f} ⭐ NEW BEST!")
+        else:
+            patience_counter += 1
+            print(f"Epoch {epoch+1}/{epochs}, Train Loss: {avg_train_loss:.4f}, Val Loss: {avg_val_loss:.4f}, Grad Norm: {avg_grad_norm:.4f}, LR: {current_lr:.6f} (patience: {patience_counter}/{patience})")
+            
+            if patience_counter >= patience:
+                print(f"Early stopping triggered! No improvement for {patience} epochs.")
+                break
 
     return model, batch_size, sequence_length
 
@@ -240,25 +257,36 @@ def load_all_books(data_dir='data'):
 
 
 def prepare_book_data(book_text, tokenizer, train_split=0.8):
-    """Tokenize book text and split into train/validation"""
-    # Split text into chunks for better processing
-    sentences = re.split(r'[.!?]+', book_text)
-    sentences = [s.strip() for s in sentences if s.strip()]
+    """Tokenize book text and split into train/validation - improved to preserve more data"""
+    print(f"Processing {len(book_text)} characters of text...")
     
-    print(f"Processing {len(sentences)} sentences...")
-    
-    # Tokenize and concatenate
+    # Split into chunks of reasonable size for tokenization (avoid memory issues)
+    chunk_size = 10000  # characters per chunk
     all_tokens = []
-    processed_sentences = 0
     
-    for sentence in sentences:
-        if len(sentence) > 10:  # Skip very short sentences
-            tokens = tokenizer.encode(sentence + '.', add_special_tokens=False)
-            all_tokens.extend(tokens)
-            all_tokens.append(tokenizer.eos_token_id)  # Add sentence separator
-            processed_sentences += 1
+    for i in range(0, len(book_text), chunk_size):
+        chunk = book_text[i:i + chunk_size]
+        
+        # Add overlap to avoid splitting words/sentences awkwardly
+        if i > 0 and i + chunk_size < len(book_text):
+            # Look back up to 200 chars for a good split point
+            overlap_start = max(0, i - 200)
+            overlap_text = book_text[overlap_start:i]
+            
+            # Find last sentence ending
+            last_period = max(overlap_text.rfind('.'), overlap_text.rfind('!'), overlap_text.rfind('?'))
+            if last_period > 0:
+                chunk = book_text[overlap_start + last_period + 1:i + chunk_size]
+        
+        # Tokenize chunk directly - no sentence splitting to preserve more data
+        tokens = tokenizer.encode(chunk, add_special_tokens=False)
+        all_tokens.extend(tokens)
+        
+        # Add EOS token between chunks to maintain document structure
+        if i + chunk_size < len(book_text):
+            all_tokens.append(tokenizer.eos_token_id)
     
-    print(f"Processed {processed_sentences} sentences into {len(all_tokens)} tokens")
+    print(f"Processed text into {len(all_tokens)} tokens (much better!)")
     
     # Convert to tensor
     full_data = torch.tensor(all_tokens, dtype=torch.long)
@@ -279,7 +307,7 @@ def save_model(model, tokenizer, model_config, training_stats, device_name):
     os.makedirs('models', exist_ok=True)
     
     # Generate UTC timestamp
-    utc_timestamp = datetime.utcnow().strftime('%Y%m%d_%H%M%S_UTC')
+    utc_timestamp = datetime.now().strftime('%Y%m%d_%H%M%S_UTC')
     model_filename = f"factlm_model_{utc_timestamp}.pth"
     metadata_filename = f"factlm_metadata_{utc_timestamp}.txt"
     
@@ -319,8 +347,9 @@ def save_model(model, tokenizer, model_config, training_stats, device_name):
         f.write(f"- Sequence Length: {training_stats['sequence_length']}\n")
         f.write(f"- Effective Batch Size: {training_stats['batch_size'] * training_stats['sequence_length']:,} tokens\n")
         f.write(f"- Learning Rate: {training_stats['learning_rate']}\n")
-        f.write(f"- Optimizer: AdamW with weight decay 0.01\n")
-        f.write(f"- LR Schedule: Warmup + Cosine Decay\n")
+        f.write(f"- Optimizer: AdamW with weight decay 0.1, betas=(0.9, 0.95)\n")
+        f.write(f"- LR Schedule: Extended Warmup + Cosine Decay\n")
+        f.write(f"- Early Stopping: Patience=5 epochs\n")
         f.write(f"- Gradient Clipping: {training_stats['max_grad_norm']}\n")
         f.write(f"- Training Tokens: {training_stats['train_tokens']:,}\n")
         f.write(f"- Validation Tokens: {training_stats['val_tokens']:,}\n")
@@ -388,14 +417,15 @@ if __name__ == "__main__":
     
     # Initialize model
     print("Initializing model...")
+    # Much smaller model for the dataset size
     model_config = {
         'vocab_size': tokenizer.vocab_size,
-        'hidden_size': 256,
-        'num_layers': 4,
-        'dropout': 0.2,
-        'd_model': 1024,
+        'hidden_size': 128,
+        'num_layers': 6,  # More layers, smaller width
+        'dropout': 0.3,  # Higher dropout for regularization
+        'd_model': 256,  # Much smaller
         'max_len': 5000,
-        'num_heads': 16  # 1024 / 16 = 64 head dimension (good for your d_model=1024)
+        'num_heads': 8   # 256 / 8 = 32 head dimension
     }
     
     model = FactLM(**model_config)
@@ -431,11 +461,11 @@ if __name__ == "__main__":
         device_name = "CPU"
         print("Using CPU as fallback")
     
-    epochs = 20  # Reduced for larger dataset
-    batch_size = 256  # Much larger batch size for A10G GPU utilization  
-    sequence_length = 512  # Longer sequences for better context
-    learning_rate = 0.01  # Higher learning rate with warmup scheduling
-    max_grad_norm = 5.0  # Gradient clipping threshold
+    epochs = 50  # More epochs for better convergence
+    batch_size = 64   # Moderate batch size for better generalization
+    sequence_length = 256  # Reasonable sequence length
+    learning_rate = 0.0003  # Lower, more conservative learning rate
+    max_grad_norm = 1.0  # Tighter gradient clipping
     
     print(f"Using device: {device} ({device_name})")
     print(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
