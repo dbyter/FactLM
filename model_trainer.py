@@ -155,35 +155,79 @@ def train_model(model, train_data, val_data, epochs, batch_size, sequence_length
     return model, batch_size, sequence_length
 
 
-def generate_text(model, start_string, max_length, temperature=0.5, tokenizer=None):
-    """Generate text using the trained model"""
+def generate_text(model, start_string, max_length, temperature=0.8, tokenizer=None, repetition_penalty=1.2, top_k=50, top_p=0.9):
+    """Generate text using the trained model with advanced sampling"""
     model.eval()
     device = next(model.parameters()).device
     
-    # Tokenize the start string
     if tokenizer is None:
         raise ValueError("Tokenizer is required for text generation")
     
+    # Tokenize the start string
     tokens = tokenizer.encode(start_string, add_special_tokens=True)
     input_ids = torch.tensor(tokens, dtype=torch.long).unsqueeze(0).to(device)
+    generated_tokens = input_ids.clone()
     
     with torch.no_grad():
-        for _ in range(max_length):
-            outputs = model(input_ids)
-            # Get the last token's logits and apply temperature
-            logits = outputs[0, -1, :] / temperature
+        for step in range(max_length):
+            # Use only recent context to avoid memory issues
+            context_length = min(generated_tokens.size(1), 256)
+            context = generated_tokens[:, -context_length:]
+            
+            outputs = model(context)
+            logits = outputs[0, -1, :].clone()
+            
+            # Apply repetition penalty
+            if repetition_penalty != 1.0:
+                for token_id in set(generated_tokens[0].tolist()):
+                    logits[token_id] /= repetition_penalty
+            
+            # Apply temperature
+            logits = logits / temperature
+            
+            # Top-k filtering
+            if top_k > 0:
+                indices_to_remove = logits < torch.topk(logits, top_k)[0][..., -1, None]
+                logits[indices_to_remove] = float('-inf')
+            
+            # Top-p (nucleus) sampling
+            if top_p < 1.0:
+                sorted_logits, sorted_indices = torch.sort(logits, descending=True)
+                cumulative_probs = torch.cumsum(torch.softmax(sorted_logits, dim=-1), dim=-1)
+                
+                # Remove tokens with cumulative probability above the threshold
+                sorted_indices_to_remove = cumulative_probs > top_p
+                sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
+                sorted_indices_to_remove[..., 0] = 0
+                
+                indices_to_remove = sorted_indices_to_remove.scatter(0, sorted_indices, sorted_indices_to_remove)
+                logits[indices_to_remove] = float('-inf')
+            
+            # Sample next token
             probs = torch.softmax(logits, dim=-1)
-            
-            # Sample from the probability distribution
             next_token = torch.multinomial(probs, 1)
-            input_ids = torch.cat([input_ids, next_token.unsqueeze(0)], dim=1)
             
-            # Stop if we hit an end token (you might want to define this)
+            # Stop conditions
             if next_token.item() == tokenizer.eos_token_id:
                 break
+                
+            # Stop if we're generating too much repetition (simple check)
+            if step > 10:
+                recent_tokens = generated_tokens[0, -10:].tolist()
+                if len(set(recent_tokens)) <= 2:  # Too much repetition
+                    break
+            
+            # Add token to sequence
+            generated_tokens = torch.cat([generated_tokens, next_token.unsqueeze(0)], dim=1)
+            
+            # Early stopping for natural sentence endings
+            if step > 5 and next_token.item() in [tokenizer.encode('.')[0], tokenizer.encode('!')[0], tokenizer.encode('?')[0]]:
+                # Stop after sentence ending if we've generated enough
+                if step > 15:
+                    break
     
     # Decode the generated tokens
-    generated_tokens = input_ids[0].cpu().tolist()
+    generated_tokens = generated_tokens[0].cpu().tolist()
     return tokenizer.decode(generated_tokens, skip_special_tokens=True)
 
 
@@ -525,23 +569,9 @@ if __name__ == "__main__":
         device_name=device_name
     )
     
-    # Generate some text
-    print("\nGenerating text...")
-    test_prompts = [
-        "Who are you?",
-        "What are you doing here?",
-        "Where did you come from?",
-        "Who is your creator?",
-    ]
-    
-    for prompt in test_prompts:
-        generated = generate_text(
-            model=trained_model,
-            start_string=prompt,
-            max_length=50,
-            temperature=0.8,
-            tokenizer=tokenizer
-        )
-        print(f"Prompt: '{prompt}'")
-        print(f"Generated: {generated}")
-        print("-" * 50)
+    # Training complete! 
+    print(f"\n🎉 Training completed!")
+    print(f"📁 Model saved: {model_path}")
+    print(f"📊 Metadata saved: {metadata_path}")
+    print(f"\n🚀 To generate text with this model, run:")
+    print(f"   python generate_text.py {model_path}")
