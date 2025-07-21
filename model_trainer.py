@@ -234,15 +234,35 @@ if __name__ == "__main__":
     )
     
     # Training parameters - automatically select best available device
+    device = None
+    device_name = ""
+    
+    # Try CUDA first
     if torch.cuda.is_available():
-        device = torch.device("cuda")
-        device_name = "CUDA (NVIDIA GPU)"
-    elif torch.backends.mps.is_available():
-        device = torch.device("mps")
-        device_name = "MPS (Apple Silicon)"
-    else:
+        try:
+            device = torch.device("cuda")
+            device_name = f"CUDA (NVIDIA GPU: {torch.cuda.get_device_name()})"
+            print(f"CUDA detected: {torch.cuda.device_count()} GPU(s) available")
+        except Exception as e:
+            print(f"CUDA available but failed to initialize: {e}")
+            device = None
+    
+    # Try MPS second (only if CUDA failed)
+    if device is None:
+        try:
+            if torch.backends.mps.is_available():
+                device = torch.device("mps")
+                device_name = "MPS (Apple Silicon)"
+                print("MPS detected and available")
+        except Exception as e:
+            print(f"MPS check failed: {e}")
+            device = None
+    
+    # Fallback to CPU
+    if device is None:
         device = torch.device("cpu")
         device_name = "CPU"
+        print("Using CPU as fallback")
     
     epochs = 10  # Reduced for larger dataset
     batch_size = 64  # Increased batch size for efficiency
