@@ -54,7 +54,7 @@ def train_model(model, train_data, val_data, epochs, batch_size, sequence_length
             return 0.5 * (1 + math.cos(progress * math.pi))
     
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
-    criterion = nn.NLLLoss()  # Use NLLLoss since model outputs log_softmax
+    criterion = nn.CrossEntropyLoss()  # Use CrossEntropyLoss since model now outputs raw logits
 
     step = 0
     for epoch in range(epochs):

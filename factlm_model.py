@@ -117,5 +117,5 @@ class FactLM(nn.Module):
         for layer in self.encoder_layers:
             x = layer(x)
         x = self.fc(x)
-        x = F.log_softmax(x, dim=2)
+        # Remove log_softmax to return raw logits for better generation flexibility
         return x
