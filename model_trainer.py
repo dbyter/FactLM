@@ -7,29 +7,47 @@ from factlm_model import FactLM
 import re
 import glob
 import os
+import math
 from datetime import datetime
 
 def train_model(model, train_data, val_data, epochs, batch_size, learning_rate, device, max_grad_norm=1.0):
     model.to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=0.01)
+    
+    # Learning rate scheduler with warmup
+    warmup_steps = len(train_data) // batch_size // 10  # 10% of first epoch for warmup
+    total_steps = (len(train_data) // batch_size) * epochs
+    
+    def lr_lambda(step):
+        if step < warmup_steps:
+            return step / warmup_steps  # Linear warmup
+        else:
+            # Cosine decay after warmup
+            progress = (step - warmup_steps) / (total_steps - warmup_steps)
+            return 0.5 * (1 + math.cos(progress * math.pi))
+    
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
     criterion = nn.NLLLoss()  # Use NLLLoss since model outputs log_softmax
 
+    step = 0
     for epoch in range(epochs):
         model.train()
         total_loss = 0
         num_batches = 0
         total_grad_norm = 0
         
-        for i in range(0, len(train_data) - batch_size, batch_size):
-            inputs = train_data[i:i+batch_size].unsqueeze(0)  # Add batch dimension
-            targets = train_data[i+1:i+batch_size+1]
+        # Better batching strategy - create proper sequences
+        for i in range(0, len(train_data) - batch_size - 1, batch_size):
+            # Create proper input-target pairs
+            inputs = train_data[i:i+batch_size].unsqueeze(0)  # Shape: [1, batch_size]
+            targets = train_data[i+1:i+batch_size+1]  # Shape: [batch_size]
 
             inputs = inputs.to(device)
             targets = targets.to(device)
 
             optimizer.zero_grad()
-            outputs = model(inputs)  # Shape: [1, seq_len, vocab_size]
-            outputs = outputs.squeeze(0)  # Remove batch dimension: [seq_len, vocab_size]
+            outputs = model(inputs)  # Shape: [1, batch_size, vocab_size]
+            outputs = outputs.squeeze(0)  # Shape: [batch_size, vocab_size]
             
             loss = criterion(outputs, targets)
             loss.backward()
@@ -39,8 +57,16 @@ def train_model(model, train_data, val_data, epochs, batch_size, learning_rate, 
             total_grad_norm += grad_norm.item()
             
             optimizer.step()
+            scheduler.step()  # Update learning rate
+            
             total_loss += loss.item()
             num_batches += 1
+            step += 1
+            
+            # Print progress every 100 steps
+            if step % 100 == 0:
+                current_lr = scheduler.get_last_lr()[0]
+                print(f"  Step {step}: Loss {loss.item():.4f}, LR {current_lr:.6f}, Grad Norm {grad_norm.item():.3f}")
 
         # Validation
         model.eval()
@@ -48,7 +74,7 @@ def train_model(model, train_data, val_data, epochs, batch_size, learning_rate, 
             val_loss = 0
             val_batches = 0
             
-            for i in range(0, len(val_data) - batch_size, batch_size):
+            for i in range(0, len(val_data) - batch_size - 1, batch_size):
                 inputs = val_data[i:i+batch_size].unsqueeze(0)
                 targets = val_data[i+1:i+batch_size+1]
 
@@ -64,7 +90,8 @@ def train_model(model, train_data, val_data, epochs, batch_size, learning_rate, 
         avg_train_loss = total_loss / num_batches if num_batches > 0 else 0
         avg_val_loss = val_loss / val_batches if val_batches > 0 else 0
         avg_grad_norm = total_grad_norm / num_batches if num_batches > 0 else 0
-        print(f"Epoch {epoch+1}/{epochs}, Train Loss: {avg_train_loss:.4f}, Val Loss: {avg_val_loss:.4f}, Grad Norm: {avg_grad_norm:.4f}")
+        current_lr = scheduler.get_last_lr()[0]
+        print(f"Epoch {epoch+1}/{epochs}, Train Loss: {avg_train_loss:.4f}, Val Loss: {avg_val_loss:.4f}, Grad Norm: {avg_grad_norm:.4f}, LR: {current_lr:.6f}")
 
     return model
 
@@ -248,6 +275,9 @@ def save_model(model, tokenizer, model_config, training_stats, device_name):
         f.write(f"- Epochs: {training_stats['epochs']}\n")
         f.write(f"- Batch Size: {training_stats['batch_size']}\n")
         f.write(f"- Learning Rate: {training_stats['learning_rate']}\n")
+        f.write(f"- Optimizer: AdamW with weight decay 0.01\n")
+        f.write(f"- LR Schedule: Warmup + Cosine Decay\n")
+        f.write(f"- Gradient Clipping: {training_stats['max_grad_norm']}\n")
         f.write(f"- Training Tokens: {training_stats['train_tokens']:,}\n")
         f.write(f"- Validation Tokens: {training_stats['val_tokens']:,}\n")
         f.write(f"- Total Parameters: {training_stats['total_params']:,}\n\n")
@@ -358,8 +388,8 @@ if __name__ == "__main__":
         print("Using CPU as fallback")
     
     epochs = 20  # Reduced for larger dataset
-    batch_size = 128  # Increased batch size for efficiency
-    learning_rate = 0.0005  # Slightly lower for larger dataset
+    batch_size = 32  # Smaller batch size for better generalization
+    learning_rate = 0.01  # Higher learning rate with warmup scheduling
     max_grad_norm = 5.0  # Gradient clipping threshold
     
     print(f"Using device: {device} ({device_name})")
