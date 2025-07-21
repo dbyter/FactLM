@@ -58,16 +58,20 @@ def train_model(model, train_data, val_data, epochs, batch_size, sequence_length
         num_batches = 0
         total_grad_norm = 0
         
-        # Create proper sequence batches for better GPU utilization
-        for i in range(0, len(train_data) - sequence_length * batch_size, sequence_length * batch_size):
-            # Reshape data into [batch_size, sequence_length]
-            batch_data = train_data[i:i + sequence_length * batch_size]
+        # Create proper sequence batches for better GPU utilization  
+        tokens_per_batch = batch_size * sequence_length
+        
+        for i in range(0, len(train_data) - tokens_per_batch - 1, tokens_per_batch):
+            # Get input tokens and target tokens (shifted by 1)
+            input_tokens = train_data[i:i + tokens_per_batch]
+            target_tokens = train_data[i + 1:i + tokens_per_batch + 1]
             
-            if len(batch_data) < sequence_length * batch_size:
+            if len(input_tokens) < tokens_per_batch or len(target_tokens) < tokens_per_batch:
                 continue  # Skip incomplete batches
                 
-            inputs = batch_data[:-batch_size].view(batch_size, sequence_length)
-            targets = batch_data[batch_size:].view(batch_size, sequence_length)
+            # Reshape into [batch_size, sequence_length]
+            inputs = input_tokens.view(batch_size, sequence_length)
+            targets = target_tokens.view(batch_size, sequence_length)
 
             inputs = inputs.to(device)
             targets = targets.to(device)
@@ -104,14 +108,15 @@ def train_model(model, train_data, val_data, epochs, batch_size, sequence_length
             val_loss = 0
             val_batches = 0
             
-            for i in range(0, len(val_data) - sequence_length * batch_size, sequence_length * batch_size):
-                batch_data = val_data[i:i + sequence_length * batch_size]
+            for i in range(0, len(val_data) - tokens_per_batch - 1, tokens_per_batch):
+                input_tokens = val_data[i:i + tokens_per_batch]
+                target_tokens = val_data[i + 1:i + tokens_per_batch + 1]
                 
-                if len(batch_data) < sequence_length * batch_size:
+                if len(input_tokens) < tokens_per_batch or len(target_tokens) < tokens_per_batch:
                     continue
                     
-                inputs = batch_data[:-batch_size].view(batch_size, sequence_length)
-                targets = batch_data[batch_size:].view(batch_size, sequence_length)
+                inputs = input_tokens.view(batch_size, sequence_length)
+                targets = target_tokens.view(batch_size, sequence_length)
 
                 inputs = inputs.to(device)
                 targets = targets.to(device)
