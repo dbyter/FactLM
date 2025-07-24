@@ -405,8 +405,95 @@ def tokenize_text_data(text_data, tokenizer):
     return all_tokens
 
 
+def print_data_samples(data_type, samples, tokenizer, max_samples=10):
+    """Print samples from different data sources for inspection"""
+    print(f"\n📋 Sample {data_type} data:")
+    print("-" * 60)
+    
+    for i, sample in enumerate(samples[:max_samples]):
+        print(f"\n{i+1:2d}. {sample}")
+        if len(sample) > 200:  # Truncate very long samples
+            print(f"    [... truncated after 200 chars]")
+    
+    if len(samples) > max_samples:
+        print(f"\n   ... and {len(samples) - max_samples} more samples")
+
+
+def print_conversation_samples(data_type, conversations, max_samples=10):
+    """Print conversation samples showing input/output pairs"""
+    print(f"\n📋 Sample {data_type} conversations:")
+    print("-" * 60)
+    
+    count = 0
+    for i, conversation in enumerate(conversations):
+        if count >= max_samples:
+            break
+            
+        try:
+            conv_data = conversation.get('data', [])
+            
+            if data_type == "UltraChat":
+                # UltraChat format: 'data' contains list of messages alternating human/assistant
+                if len(conv_data) >= 2:
+                    prompt = conv_data[0]  # First message (human)
+                    response = conv_data[1]  # Second message (assistant)
+                    
+                    # Truncate long text for readability
+                    prompt_display = prompt[:150] + "..." if len(prompt) > 150 else prompt
+                    response_display = response[:200] + "..." if len(response) > 200 else response
+                    
+                    print(f"\n{count+1:2d}. HUMAN:     {prompt_display}")
+                    print(f"   ASSISTANT: {response_display}")
+                    count += 1
+                    
+            else:
+                # Generated data format: 'data' contains [prompt, response] pair
+                if len(conv_data) >= 2:
+                    prompt = conv_data[0]
+                    response = conv_data[1]
+                    
+                    # Truncate long text for readability
+                    prompt_display = prompt[:150] + "..." if len(prompt) > 150 else prompt
+                    response_display = response[:200] + "..." if len(response) > 200 else response
+                    
+                    print(f"\n{count+1:2d}. INPUT:  {prompt_display}")
+                    print(f"   OUTPUT: {response_display}")
+                    count += 1
+                    
+        except Exception as e:
+            continue
+    
+    if len(conversations) > max_samples:
+        print(f"\n   ... and {len(conversations) - max_samples} more conversations")
+
+
+def print_book_samples(book_text, tokenizer, max_samples=10):
+    """Print samples from book text"""
+    print(f"\n📋 Sample book text chunks:")
+    print("-" * 60)
+    
+    # Split book text into chunks for sampling
+    chunk_size = 300  # Characters per chunk
+    chunks = []
+    
+    for i in range(0, min(len(book_text), chunk_size * max_samples * 3), chunk_size):
+        chunk = book_text[i:i + chunk_size].strip()
+        if len(chunk) > 50:  # Skip very short chunks
+            chunks.append(chunk)
+    
+    for i, chunk in enumerate(chunks[:max_samples]):
+        # Clean up the chunk for display
+        clean_chunk = ' '.join(chunk.split())  # Remove extra whitespace
+        if len(clean_chunk) > 250:
+            clean_chunk = clean_chunk[:250] + "..."
+        
+        print(f"\n{i+1:2d}. {clean_chunk}")
+    
+    print(f"\n   Total book text: {len(book_text):,} characters")
+
+
 def load_and_process_all_data(data_dir='data', 
-                             ultrachat_samples=25000,  # Updated default to 25K
+                             ultrachat_samples=75000,  # Updated default to 75K
                              generated_data_file="temp_generated_training_data.json",  # Changed to temp file
                              train_split=0.8, 
                              seed=42):
@@ -437,6 +524,9 @@ def load_and_process_all_data(data_dir='data',
     print("\n📚 Loading book data...")
     book_text, book_files = load_all_books(data_dir)
     
+    # Print book samples
+    print_book_samples(book_text, tokenizer, max_samples=10)
+    
     # Process book data into tokens
     print("\n📖 Tokenizing book data...")
     book_tokens = tokenize_text_data(book_text, tokenizer)
@@ -445,9 +535,13 @@ def load_and_process_all_data(data_dir='data',
     print("\n💬 Loading UltraChat dataset...")
     ultrachat_data = load_ultrachat_data(
         dataset_name="stingning/ultrachat",
-        num_samples=25000,  # Sample 25K conversations as requested
+        num_samples=ultrachat_samples,  # Use the parameter value (now 75K)
         seed=seed
     )
+    
+    # Print UltraChat samples (if loaded successfully)
+    if ultrachat_data is not None:
+        print_conversation_samples("UltraChat", ultrachat_data, max_samples=10)
     
     # Process UltraChat conversations
     ultrachat_tokens = []
@@ -460,6 +554,10 @@ def load_and_process_all_data(data_dir='data',
     # Load and process generated training data
     print(f"\n🤖 Loading generated training data from {generated_data_file}...")
     generated_data = load_generated_training_data(generated_data_file)
+    
+    # Print generated conversation samples (if loaded successfully)
+    if generated_data is not None:
+        print_conversation_samples("Generated", generated_data, max_samples=10)
     
     generated_tokens = []
     if generated_data is not None:
