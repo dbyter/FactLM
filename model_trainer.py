@@ -365,10 +365,10 @@ def save_model(model, tokenizer, model_config, training_stats, device_name):
 
 # Example usage and data setup
 if __name__ == "__main__":
-    print("🚀 FactLM Training with Books + UltraChat Data")
-    print("=" * 60)
-    print("📝 Features: Multi-source training, automatic checkpointing every 5 epochs")
-    print("📈 Enhanced: 50K UltraChat conversations + Large model architecture")
+    print("🚀 FactLM Training - Efficient Model")
+    print("=" * 50)
+    print("📝 Features: Smaller model (d_model=256), automatic checkpointing every 5 epochs")
+    print("📈 Optimized: Generated data + efficient architecture")
     print("💾 Checkpoints saved to: checkpoints/training_TIMESTAMP/")
     print("🔄 Resume training by modifying this script to load from checkpoint")
     
@@ -392,16 +392,16 @@ if __name__ == "__main__":
     
     # Initialize model
     print("\n🧠 Initializing model...")
-    # Significantly larger model for the expanded dataset
+    # Smaller, more efficient model configuration
     # NOTE: This configuration must match the defaults in generate_text.py for checkpoint compatibility
     model_config = {
         'vocab_size': tokenizer.vocab_size,
-        'hidden_size': 512,      # Reduced to match d_model
-        'num_layers': 12,        # Increased from 8 (50% more layers)
-        'dropout': 0.15,         # Slightly reduced for larger model
-        'd_model': 512,          # Reduced from 1024 for faster training
+        'hidden_size': 256,      # Match d_model for efficiency
+        'num_layers': 6,         # Reduced from 12 to lower parameter count
+        'dropout': 0.2,          # Standard dropout
+        'd_model': 256,          # Reduced from 512 for efficiency
         'max_len': 5000,
-        'num_heads': 8           # 8 heads gives 64-dim heads (512/8=64)
+        'num_heads': 8           # 8 heads gives 32-dim heads (256/8=32)
     }
     
     # Validate model configuration
@@ -444,10 +444,10 @@ if __name__ == "__main__":
         device_name = "CPU"
         print("Using CPU as fallback")
     
-    epochs = 25           # Slightly reduced due to larger model and more data
-    batch_size = 32       # Doubled batch size for better GPU utilization (was 16)
+    epochs = 25           # Keep same epochs for good training
+    batch_size = 48       # Increased batch size due to smaller model
     sequence_length = 256  # Keep reasonable sequence length
-    learning_rate = 0.0002 # Slightly increased LR for larger batch size (was 0.00015)
+    learning_rate = 0.0003 # Slightly increased LR for smaller model
     max_grad_norm = 1.0   # Gradient clipping
     checkpoint_every = 5  # Save checkpoint every 5 epochs
     
@@ -455,9 +455,9 @@ if __name__ == "__main__":
     print(f"Device: {device} ({device_name})")
     print(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
     print(f"Batch configuration: {batch_size} sequences × {sequence_length} tokens = {batch_size * sequence_length:,} tokens per batch")
-    print(f"🚀 OPTIMIZED: 2x larger batches for speed ({batch_size * sequence_length:,} vs 4,096 tokens)")
+    print(f"🚀 EFFICIENT: Smaller model with d_model={model_config['d_model']}, layers={model_config['num_layers']}, heads={model_config['num_heads']}")
     print(f"Checkpoint frequency: Every {checkpoint_every} epochs")
-    print(f"🔥 Large model: d_model={model_config['d_model']}, layers={model_config['num_layers']}, heads={model_config['num_heads']}")
+    print(f"💡 Head dimension: {head_dim} (optimized for efficiency)")
     
     # Check if configuration is reasonable for dataset size
     total_tokens_needed = batch_size * sequence_length
@@ -468,13 +468,10 @@ if __name__ == "__main__":
     estimated_memory_mb = (batch_size * sequence_length * model_config['d_model'] * 4) // (1024**2)
     print(f"Estimated GPU memory usage: ~{estimated_memory_mb}MB per batch")
     
-    if estimated_memory_mb > 12000:  # More than 12GB per batch
-        print("⚠️  Very high memory usage detected! Consider reducing batch_size or sequence_length if you get OOM errors")
-        print(f"   Estimated total model memory: ~{estimated_memory_mb * 2}MB (including gradients)")
-    elif estimated_memory_mb > 8000:  # More than 8GB per batch
+    if estimated_memory_mb > 4000:  # More than 4GB per batch
         print("⚠️  High memory usage detected! Monitor GPU memory during training")
     else:
-        print(f"✅ Memory usage looks reasonable: ~{estimated_memory_mb}MB per batch")
+        print(f"✅ Memory usage looks efficient: ~{estimated_memory_mb}MB per batch")
     
     # Train the model
     print("\n🎯 Starting training...")

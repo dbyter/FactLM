@@ -22,44 +22,16 @@ def get_default_model_config(vocab_size, d_model=None):
     
     This ensures consistency between training and generation scripts.
     """
-    if d_model is None:
-        # Auto-detect based on vocab_size (though this is just a fallback)
-        d_model = 512  # Default to large model
-    
-    # Match the exact configuration from model_trainer.py
-    if d_model >= 512:
-        # Large model configuration (current default in model_trainer.py)
-        return {
-            'vocab_size': vocab_size,
-            'hidden_size': 512,      # From model_trainer.py
-            'num_layers': 12,        # From model_trainer.py  
-            'dropout': 0.15,         # From model_trainer.py
-            'd_model': 512,          # From model_trainer.py
-            'max_len': 5000,
-            'num_heads': 8           # From model_trainer.py (8 heads = 64-dim each)
-        }
-    elif d_model >= 512:
-        # Medium model configuration
-        return {
-            'vocab_size': vocab_size,
-            'hidden_size': 256,
-            'num_layers': 8,
-            'dropout': 0.2,
-            'd_model': 512,
-            'max_len': 5000,
-            'num_heads': 8
-        }
-    else:
-        # Small model configuration
-        return {
-            'vocab_size': vocab_size,
-            'hidden_size': d_model,
-            'num_layers': 6,
-            'dropout': 0.2,
-            'd_model': d_model,
-            'max_len': 5000,
-            'num_heads': max(1, d_model // 64)
-        }
+    # Single, efficient model configuration matching model_trainer.py
+    return {
+        'vocab_size': vocab_size,
+        'hidden_size': 256,      # From model_trainer.py
+        'num_layers': 6,         # From model_trainer.py  
+        'dropout': 0.2,          # From model_trainer.py
+        'd_model': 256,          # From model_trainer.py
+        'max_len': 5000,
+        'num_heads': 8           # From model_trainer.py (8 heads = 32-dim each)
+    }
 
 
 def generate_text(model, start_string, max_length, temperature=0.8, tokenizer=None, repetition_penalty=1.2, top_k=50, top_p=0.9):
@@ -336,19 +308,10 @@ def load_saved_model(model_path, tokenizer):
         # Extract number of heads from attention weights
         # q weight shape is [d_model, d_model], so num_heads = d_model / head_dim
         if 'encoder_layers.0.self_attn.q.weight' in model_state:
-            # Determine num_heads based on d_model to match model_trainer.py defaults
-            if d_model == 512:
-                num_heads = 8   # Current large model: 512/8 = 64-dim heads
-            elif d_model == 768:
-                num_heads = 12  # Standard transformer: 768/12 = 64-dim heads
-            elif d_model == 256:
-                num_heads = 8   # Small model: 256/8 = 32-dim heads
-            elif d_model == 1024:
-                num_heads = 8   # Very large model (legacy): 1024/8 = 128-dim heads
-            else:
-                num_heads = max(1, d_model // 64)  # Default to 64-dim heads
+            # Use consistent 8 heads for the new simplified model
+            num_heads = 8   # Always 8 heads in the new configuration
         else:
-            num_heads = 8  # Updated default: 8 heads for all model sizes
+            num_heads = 8  # Default: 8 heads
         
         # Extract hidden size from feed forward layers
         if 'encoder_layers.0.feed_forward.0.weight' in model_state:
@@ -356,26 +319,17 @@ def load_saved_model(model_path, tokenizer):
             ff_hidden_size = model_state['encoder_layers.0.feed_forward.0.weight'].shape[0]
             # Verify this is d_model * 4 as expected
             if ff_hidden_size == d_model * 4:
-                # hidden_size parameter in FactLM config - match model_trainer.py defaults
-                if d_model >= 512:
-                    hidden_size = 512   # Large model from model_trainer.py
-                else:
-                    hidden_size = d_model  # Smaller models use d_model
+                # hidden_size parameter matches d_model in the new simplified config
+                hidden_size = d_model
             else:
                 # Fallback if unexpected architecture
                 hidden_size = d_model
         else:
-            # Match model_trainer.py defaults based on model size
-            if d_model >= 512:
-                hidden_size = 512   # Large model configuration
-            else:
-                hidden_size = d_model  # Default for smaller models
+            # Match new simplified config: hidden_size = d_model
+            hidden_size = d_model
         
-        # Set dropout to match model_trainer.py defaults
-        if d_model >= 512:
-            dropout = 0.15  # Large model dropout from model_trainer.py
-        else:
-            dropout = 0.2   # Previous model dropout
+        # Set consistent dropout for the simplified model
+        dropout = 0.2   # Standard dropout for the new configuration
         
         model_config = {
             'vocab_size': vocab_size,
@@ -492,31 +446,33 @@ def main():
     # Test with predefined prompts
     print("\n🤖 Testing with predefined prompts:")
     
-    sampling_configs = [
-        {"temperature": 0.7, "repetition_penalty": 1.8, "top_k": 40, "top_p": 0.9, "name": "Balanced"},
-        {"temperature": 0.9, "repetition_penalty": 2.0, "top_k": 30, "top_p": 0.85, "name": "Creative"}, 
-        {"temperature": 0.5, "repetition_penalty": 1.5, "top_k": 50, "top_p": 0.95, "name": "Conservative"}
-    ]
+    # Single balanced configuration for all generation
+    generation_config = {
+        "temperature": 0.8, 
+        "repetition_penalty": 1.5, 
+        "top_k": 40, 
+        "top_p": 0.9
+    }
     
     for prompt in test_prompts[:3]:  # Test first 3 prompts
         print(f"\nPrompt: '{prompt}'")
         
-        for config in sampling_configs:
-            generated = generate_text(
-                model=model,
-                start_string=prompt,
-                max_length=30,  # Reduced from 40 for cleaner output
-                temperature=config["temperature"],
-                repetition_penalty=config["repetition_penalty"],
-                top_k=config["top_k"],
-                top_p=config["top_p"],
-                tokenizer=tokenizer
-            )
-            print(f"  {config['name']:12}: {generated}")
+        generated = generate_text(
+            model=model,
+            start_string=prompt,
+            max_length=40,
+            temperature=generation_config["temperature"],
+            repetition_penalty=generation_config["repetition_penalty"],
+            top_k=generation_config["top_k"],
+            top_p=generation_config["top_p"],
+            tokenizer=tokenizer
+        )
+        print(f"  Generated: {generated}")
     
     # Interactive mode
     print(f"\n{'='*60}")
     print("💬 Interactive mode (type 'quit' to exit):")
+    print(f"Using: temp={generation_config['temperature']}, rep_penalty={generation_config['repetition_penalty']}, top_k={generation_config['top_k']}, top_p={generation_config['top_p']}")
     print("="*60)
     
     while True:
@@ -529,20 +485,19 @@ def main():
             if not prompt:
                 continue
             
-            print(f"\nGenerating responses for: '{prompt}'")
+            print(f"\nGenerating response for: '{prompt}'")
             
-            for config in sampling_configs:
-                generated = generate_text(
-                    model=model,
-                    start_string=prompt,
-                    max_length=50,  # Reduced from 75 for better quality
-                    temperature=config["temperature"],
-                    repetition_penalty=config["repetition_penalty"],
-                    top_k=config["top_k"],
-                    top_p=config["top_p"],
-                    tokenizer=tokenizer
-                )
-                print(f"  {config['name']:12}: {generated}")
+            generated = generate_text(
+                model=model,
+                start_string=prompt,
+                max_length=60,
+                temperature=generation_config["temperature"],
+                repetition_penalty=generation_config["repetition_penalty"],
+                top_k=generation_config["top_k"],
+                top_p=generation_config["top_p"],
+                tokenizer=tokenizer
+            )
+            print(f"  Response: {generated}")
                 
         except KeyboardInterrupt:
             print("\n\nGoodbye!")
