@@ -269,18 +269,34 @@ def tokenize_text_data(text_data, tokenizer):
     Returns:
         list: List of token IDs
     """
-    # Split into chunks for memory efficiency
-    chunk_size = 10000
-    all_tokens = []
+    # For small to medium texts, tokenize all at once for best quality
+    if len(text_data) <= 500000:  # ~500K characters or less
+        return tokenizer.encode(text_data, add_special_tokens=False)
     
-    for i in range(0, len(text_data), chunk_size):
-        chunk = text_data[i:i + chunk_size]
-        tokens = tokenizer.encode(chunk, add_special_tokens=False)
+    # For very large texts, split at sentence boundaries to preserve word integrity
+    print(f"   Large text detected ({len(text_data):,} chars), using sentence-boundary chunking...")
+    
+    # Split into sentences first
+    import re
+    sentences = re.split(r'(?<=[.!?])\s+', text_data)
+    
+    all_tokens = []
+    current_chunk = ""
+    chunk_size_limit = 50000  # Character limit per chunk (larger than before)
+    
+    for sentence in sentences:
+        # If adding this sentence would exceed the limit, process current chunk
+        if len(current_chunk) + len(sentence) > chunk_size_limit and current_chunk:
+            tokens = tokenizer.encode(current_chunk.strip(), add_special_tokens=False)
+            all_tokens.extend(tokens)
+            current_chunk = sentence
+        else:
+            current_chunk += " " + sentence if current_chunk else sentence
+    
+    # Process the final chunk
+    if current_chunk.strip():
+        tokens = tokenizer.encode(current_chunk.strip(), add_special_tokens=False)
         all_tokens.extend(tokens)
-        
-        # Add EOS token between chunks
-        if i + chunk_size < len(text_data):
-            all_tokens.append(tokenizer.eos_token_id)
     
     return all_tokens
 
