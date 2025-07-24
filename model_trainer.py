@@ -401,7 +401,7 @@ if __name__ == "__main__":
         'dropout': 0.15,         # Slightly reduced for larger model
         'd_model': 1024,         # Increased from 512 (2x larger)
         'max_len': 5000,
-        'num_heads': 16          # Increased from 8, keeps 64-dim heads (1024/16=64)
+        'num_heads': 8           # Reduced from 16, gives 128-dim heads (1024/8=128)
     }
     
     # Validate model configuration

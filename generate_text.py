@@ -36,7 +36,7 @@ def get_default_model_config(vocab_size, d_model=None):
             'dropout': 0.15,         # From model_trainer.py
             'd_model': 1024,         # From model_trainer.py
             'max_len': 5000,
-            'num_heads': 16          # From model_trainer.py
+            'num_heads': 8           # From model_trainer.py (reduced from 16)
         }
     elif d_model >= 512:
         # Medium model configuration
@@ -338,7 +338,7 @@ def load_saved_model(model_path, tokenizer):
         if 'encoder_layers.0.self_attn.q.weight' in model_state:
             # Determine num_heads based on d_model to match model_trainer.py defaults
             if d_model == 1024:
-                num_heads = 16  # New large model: 1024/16 = 64-dim heads
+                num_heads = 8   # New large model: 1024/8 = 128-dim heads
             elif d_model == 512:
                 num_heads = 8   # Previous model: 512/8 = 64-dim heads
             elif d_model == 768:
@@ -348,7 +348,7 @@ def load_saved_model(model_path, tokenizer):
             else:
                 num_heads = max(1, d_model // 64)  # Default to 64-dim heads
         else:
-            num_heads = 16 if d_model >= 1024 else 8  # Fallback based on model size
+            num_heads = 8  # Updated default: 8 heads for all model sizes
         
         # Extract hidden size from feed forward layers
         if 'encoder_layers.0.feed_forward.0.weight' in model_state:
