@@ -171,19 +171,79 @@ def load_saved_model(model_path, tokenizer):
     """Load a previously saved model"""
     checkpoint = torch.load(model_path, map_location='cpu')
     
-    # Extract model configuration
-    model_config = checkpoint['model_config']
+    # Handle different checkpoint formats
+    if 'model_config' in checkpoint:
+        # New format with explicit model_config
+        model_config = checkpoint['model_config']
+    else:
+        # Old format - reconstruct model_config from model state dict
+        print("⚠️  Checkpoint doesn't have model_config, reconstructing from model state...")
+        model_state = checkpoint['model_state_dict']
+        
+        # Extract configuration from model state dict
+        vocab_size = model_state['embedding.weight'].shape[0]
+        d_model = model_state['embedding.weight'].shape[1]
+        
+        # Count number of layers by looking for encoder layer patterns
+        num_layers = 0
+        for key in model_state.keys():
+            if key.startswith('encoder_layers.') and key.endswith('.self_attn.query.weight'):
+                layer_num = int(key.split('.')[1])
+                num_layers = max(num_layers, layer_num + 1)
+        
+        # Extract number of heads from attention weights
+        # query weight shape is [d_model, d_model], so num_heads = d_model / head_dim
+        if 'encoder_layers.0.self_attn.query.weight' in model_state:
+            # Assume standard head dimension (typically d_model // num_heads)
+            # Common configurations: 8 heads for d_model=512, 12 heads for d_model=768
+            if d_model == 512:
+                num_heads = 8
+            elif d_model == 768:
+                num_heads = 12
+            elif d_model == 256:
+                num_heads = 8
+            else:
+                num_heads = min(8, d_model // 64)  # Default to 64-dim heads
+        else:
+            num_heads = 8  # Fallback
+        
+        # Extract hidden size from feed forward layers
+        if 'encoder_layers.0.feed_forward.0.weight' in model_state:
+            hidden_size = model_state['encoder_layers.0.feed_forward.0.weight'].shape[0]
+        else:
+            hidden_size = d_model * 4  # Common default
+        
+        model_config = {
+            'vocab_size': vocab_size,
+            'hidden_size': hidden_size,
+            'num_layers': num_layers,
+            'dropout': 0.1,  # Default dropout
+            'd_model': d_model,
+            'max_len': 5000,  # Default max length
+            'num_heads': num_heads
+        }
+        
+        print(f"   Reconstructed config: vocab_size={vocab_size}, d_model={d_model}, num_layers={num_layers}, num_heads={num_heads}")
     
-    # Initialize model with saved configuration
+    # Initialize model with configuration
     model = FactLM(**model_config)
     
     # Load the trained weights
     model.load_state_dict(checkpoint['model_state_dict'])
     
     print(f"✅ Model loaded from: {model_path}")
-    print(f"   - Trained on: {checkpoint['timestamp_utc']}")
-    print(f"   - Device used: {checkpoint['device_used']}")
-    print(f"   - Vocabulary size: {checkpoint['vocab_size']:,}")
+    
+    # Handle different checkpoint metadata formats
+    if 'timestamp_utc' in checkpoint:
+        print(f"   - Trained on: {checkpoint['timestamp_utc']}")
+    elif 'epoch' in checkpoint:
+        print(f"   - Checkpoint from epoch: {checkpoint['epoch']}")
+    
+    if 'device_used' in checkpoint:
+        print(f"   - Device used: {checkpoint['device_used']}")
+    
+    vocab_size_from_checkpoint = checkpoint.get('vocab_size', model_config['vocab_size'])
+    print(f"   - Vocabulary size: {vocab_size_from_checkpoint:,}")
     
     return model, checkpoint
 

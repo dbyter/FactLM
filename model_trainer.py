@@ -83,7 +83,20 @@ def train_model(model, train_data, val_data, epochs, batch_size, sequence_length
             'sequence_length': sequence_length,
             'learning_rate': learning_rate,
             'max_grad_norm': max_grad_norm,
-            'step': step
+            'step': step,
+            # Add metadata needed for text generation
+            'model_config': {
+                'vocab_size': model.embedding.num_embeddings,
+                'hidden_size': model.hidden_size,
+                'num_layers': model.num_layers,
+                'dropout': model.dropout,
+                'd_model': model.d_model,
+                'max_len': 5000,  # This should match the original config
+                'num_heads': model.num_heads
+            },
+            'timestamp_utc': datetime.now().strftime('%Y%m%d_%H%M%S_UTC'),
+            'device_used': str(device),
+            'vocab_size': model.embedding.num_embeddings
         }
         
         # Save regular checkpoint
