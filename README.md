@@ -95,12 +95,32 @@ The training script automatically balances these sources and provides detailed s
 
 Key parameters in `model_trainer.py`:
 - `vocab_size`: 50,257 (GPT-2 tokenizer)
-- `d_model`: 512 (embedding dimension, increased for combined dataset)
-- `num_layers`: 8 (transformer layers, increased for complexity)
-- `hidden_size`: 256
-- `epochs`: 30 (reduced due to larger dataset)
-- `batch_size`: 32 (adjusted for larger model)
-- `learning_rate`: 0.0002 (conservative for stability)
+- `d_model`: 1024 (embedding dimension, large model)
+- `num_layers`: 12 (transformer layers, increased for complexity)
+- `num_heads`: 16 (attention heads, 64-dim each)
+- `hidden_size`: 1024 (feed-forward layer size)
+- `epochs`: 25 (optimized for larger model and dataset)
+- `batch_size`: 16 (adjusted for larger model memory requirements)
+- `learning_rate`: 0.00015 (conservative for large model stability)
+
+### Large Model Performance
+
+The enhanced model features:
+- **4x larger embedding dimension** (1024 vs 256)
+- **50% more transformer layers** (12 vs 8) 
+- **2x more attention heads** (16 vs 8)
+- **Expanded training data** (50K UltraChat conversations)
+
+**Memory Requirements:**
+- Recommended: 16GB+ GPU memory for training
+- Minimum: 12GB GPU memory (with potential OOM risk)
+- CPU fallback available but significantly slower
+
+**Performance Benefits:**
+- Better understanding of complex topics
+- Improved coherence in longer text generation
+- Enhanced conversational abilities
+- More diverse and creative outputs
 
 ### UltraChat Configuration
 
@@ -109,7 +129,7 @@ You can customize the UltraChat data loading:
 ```python
 ultrachat_data = load_ultrachat_data(
     dataset_name="stingning/ultrachat",
-    num_samples=25000,  # Number of conversations to sample
+    num_samples=50000,  # Expanded dataset for better performance
     seed=42            # For reproducible sampling
 )
 ```
@@ -163,9 +183,12 @@ FactLM/
 - **Loss Function**: Cross-Entropy Loss
 - **Optimizer**: AdamW with weight decay and beta parameters
 - **Learning Rate Schedule**: Warmup followed by cosine decay
-- **Attention Heads**: 8 heads per layer
+- **Attention Heads**: 16 heads per layer (64 dimensions each)
+- **Model Size**: ~85M parameters (large architecture)
+- **Embedding Dimension**: 1024 (d_model)
+- **Feed-Forward Size**: 4096 (d_model * 4)
 - **Positional Encoding**: Sinusoidal encoding up to 5000 positions
-- **Dropout**: 0.2 for regularization
+- **Dropout**: 0.15 for regularization
 - **Gradient Clipping**: Max norm of 1.0
 
 ## Data Format

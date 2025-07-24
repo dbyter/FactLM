@@ -1,4 +1,18 @@
 # Requirements: pip install torch transformers datasets
+"""
+FactLM Model Training Script
+
+This script trains a transformer-based language model on Project Gutenberg books 
+and UltraChat conversational data. All checkpoints and final models saved by this 
+script are compatible with generate_text.py for text generation.
+
+Checkpoint compatibility features:
+- Saves complete model_config in all checkpoints
+- Validates configuration consistency
+- Uses standardized architecture parameters
+- Compatible with both training resume and text generation
+"""
+
 import torch
 import torch.nn as nn
 from torch.nn.utils import clip_grad_norm_
@@ -98,6 +112,27 @@ def train_model(model, train_data, val_data, epochs, batch_size, sequence_length
             'device_used': str(device),
             'vocab_size': model.embedding.num_embeddings
         }
+        
+        # Validate checkpoint data for generate_text.py compatibility
+        required_fields = ['model_state_dict', 'model_config', 'timestamp_utc', 'device_used', 'vocab_size']
+        for field in required_fields:
+            if field not in checkpoint_data:
+                print(f"⚠️  Warning: Missing required field '{field}' in checkpoint")
+        
+        # Validate model_config completeness
+        required_config_fields = ['vocab_size', 'hidden_size', 'num_layers', 'dropout', 'd_model', 'max_len', 'num_heads']
+        for field in required_config_fields:
+            if field not in checkpoint_data['model_config']:
+                print(f"⚠️  Warning: Missing required model_config field '{field}' in checkpoint")
+        
+        # Verify saved config matches actual model architecture
+        saved_config = checkpoint_data['model_config']
+        if (saved_config['d_model'] != model.d_model or 
+            saved_config['num_layers'] != model.num_layers or 
+            saved_config['num_heads'] != model.num_heads):
+            print(f"⚠️  Warning: Saved model_config doesn't match actual model architecture!")
+            print(f"   Saved: d_model={saved_config['d_model']}, layers={saved_config['num_layers']}, heads={saved_config['num_heads']}")
+            print(f"   Actual: d_model={model.d_model}, layers={model.num_layers}, heads={model.num_heads}")
         
         # Save regular checkpoint
         if epoch % checkpoint_every == 0 or is_best:
@@ -752,6 +787,7 @@ if __name__ == "__main__":
     print("🚀 FactLM Training with Books + UltraChat Data")
     print("=" * 60)
     print("📝 Features: Multi-source training, automatic checkpointing every 5 epochs")
+    print("📈 Enhanced: 50K UltraChat conversations + Large model architecture")
     print("💾 Checkpoints saved to: checkpoints/training_TIMESTAMP/")
     print("🔄 Resume training by modifying this script to load from checkpoint")
     
@@ -803,7 +839,7 @@ if __name__ == "__main__":
     print("\n💬 Loading UltraChat dataset...")
     ultrachat_data = load_ultrachat_data(
         dataset_name="stingning/ultrachat",
-        num_samples=25000,  # Adjust this number based on your needs and resources
+        num_samples=50000,  # Increased from 25,000 for more diverse training data
         seed=42
     )
     
@@ -829,16 +865,24 @@ if __name__ == "__main__":
     
     # Initialize model
     print("\n🧠 Initializing model...")
-    # Adjust model size based on larger combined dataset
+    # Significantly larger model for the expanded dataset
+    # NOTE: This configuration must match the defaults in generate_text.py for checkpoint compatibility
     model_config = {
         'vocab_size': tokenizer.vocab_size,
-        'hidden_size': 256,      # Increased from 128
-        'num_layers': 8,         # Increased from 6
-        'dropout': 0.2,          # Reduced from 0.3 for larger dataset
-        'd_model': 512,          # Increased from 256
+        'hidden_size': 1024,     # Increased from 256 (4x larger)
+        'num_layers': 12,        # Increased from 8 (50% more layers)
+        'dropout': 0.15,         # Slightly reduced for larger model
+        'd_model': 1024,         # Increased from 512 (2x larger)
         'max_len': 5000,
-        'num_heads': 8           # 512 / 8 = 64 head dimension
+        'num_heads': 16          # Increased from 8, keeps 64-dim heads (1024/16=64)
     }
+    
+    # Validate model configuration
+    assert model_config['d_model'] % model_config['num_heads'] == 0, \
+        f"d_model ({model_config['d_model']}) must be divisible by num_heads ({model_config['num_heads']})"
+    
+    head_dim = model_config['d_model'] // model_config['num_heads']
+    print(f"Model architecture validated: {model_config['num_heads']} heads × {head_dim} dimensions = {model_config['d_model']}")
     
     model = FactLM(**model_config)
     
@@ -873,10 +917,10 @@ if __name__ == "__main__":
         device_name = "CPU"
         print("Using CPU as fallback")
     
-    epochs = 30           # Reduced epochs since we have more data
-    batch_size = 32       # Reduced batch size due to larger model
+    epochs = 25           # Slightly reduced due to larger model and more data
+    batch_size = 16       # Reduced from 32 due to much larger model (4x memory usage)
     sequence_length = 256  # Keep reasonable sequence length
-    learning_rate = 0.0002 # Lower learning rate for stability
+    learning_rate = 0.00015 # Reduced from 0.0002 for larger model stability
     max_grad_norm = 1.0   # Gradient clipping
     checkpoint_every = 5  # Save checkpoint every 5 epochs
     
@@ -885,6 +929,7 @@ if __name__ == "__main__":
     print(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
     print(f"Batch configuration: {batch_size} sequences × {sequence_length} tokens = {batch_size * sequence_length:,} tokens per batch")
     print(f"Checkpoint frequency: Every {checkpoint_every} epochs")
+    print(f"🔥 Large model: d_model={model_config['d_model']}, layers={model_config['num_layers']}, heads={model_config['num_heads']}")
     
     # Check if configuration is reasonable for dataset size
     total_tokens_needed = batch_size * sequence_length
@@ -895,8 +940,11 @@ if __name__ == "__main__":
     estimated_memory_mb = (batch_size * sequence_length * model_config['d_model'] * 4) // (1024**2)
     print(f"Estimated GPU memory usage: ~{estimated_memory_mb}MB per batch")
     
-    if estimated_memory_mb > 8000:  # More than 8GB per batch
-        print("⚠️  High memory usage detected! If you get OOM errors, reduce batch_size or sequence_length")
+    if estimated_memory_mb > 12000:  # More than 12GB per batch
+        print("⚠️  Very high memory usage detected! Consider reducing batch_size or sequence_length if you get OOM errors")
+        print(f"   Estimated total model memory: ~{estimated_memory_mb * 2}MB (including gradients)")
+    elif estimated_memory_mb > 8000:  # More than 8GB per batch
+        print("⚠️  High memory usage detected! Monitor GPU memory during training")
     
     # Train the model
     print("\n🎯 Starting training...")

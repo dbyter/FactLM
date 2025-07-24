@@ -2,6 +2,13 @@
 """
 FactLM Text Generation Script
 Usage: python generate_text.py <model_path>
+
+This script is compatible with both:
+- Full models saved by model_trainer.py (with model_config included)
+- Checkpoint files from training (best_model.pth, latest_checkpoint.pth, etc.)
+
+The script automatically detects the model architecture and uses configurations
+that match model_trainer.py defaults for consistency.
 """
 
 import torch
@@ -9,6 +16,51 @@ import sys
 import os
 from transformers import AutoTokenizer
 from factlm_model import FactLM
+
+def get_default_model_config(vocab_size, d_model=None):
+    """Get default model configuration matching model_trainer.py
+    
+    This ensures consistency between training and generation scripts.
+    """
+    if d_model is None:
+        # Auto-detect based on vocab_size (though this is just a fallback)
+        d_model = 1024  # Default to large model
+    
+    # Match the exact configuration from model_trainer.py
+    if d_model >= 1024:
+        # Large model configuration (current default in model_trainer.py)
+        return {
+            'vocab_size': vocab_size,
+            'hidden_size': 1024,     # From model_trainer.py
+            'num_layers': 12,        # From model_trainer.py  
+            'dropout': 0.15,         # From model_trainer.py
+            'd_model': 1024,         # From model_trainer.py
+            'max_len': 5000,
+            'num_heads': 16          # From model_trainer.py
+        }
+    elif d_model >= 512:
+        # Medium model configuration
+        return {
+            'vocab_size': vocab_size,
+            'hidden_size': 256,
+            'num_layers': 8,
+            'dropout': 0.2,
+            'd_model': 512,
+            'max_len': 5000,
+            'num_heads': 8
+        }
+    else:
+        # Small model configuration
+        return {
+            'vocab_size': vocab_size,
+            'hidden_size': d_model,
+            'num_layers': 6,
+            'dropout': 0.2,
+            'd_model': d_model,
+            'max_len': 5000,
+            'num_heads': max(1, d_model // 64)
+        }
+
 
 def generate_text(model, start_string, max_length, temperature=0.8, tokenizer=None, repetition_penalty=1.2, top_k=50, top_p=0.9):
     """Generate text using the trained model with advanced sampling and anti-repetition"""
@@ -284,36 +336,77 @@ def load_saved_model(model_path, tokenizer):
         # Extract number of heads from attention weights
         # q weight shape is [d_model, d_model], so num_heads = d_model / head_dim
         if 'encoder_layers.0.self_attn.q.weight' in model_state:
-            # Assume standard head dimension (typically d_model // num_heads)
-            # Common configurations: 8 heads for d_model=512, 12 heads for d_model=768
-            if d_model == 512:
-                num_heads = 8
+            # Determine num_heads based on d_model to match model_trainer.py defaults
+            if d_model == 1024:
+                num_heads = 16  # New large model: 1024/16 = 64-dim heads
+            elif d_model == 512:
+                num_heads = 8   # Previous model: 512/8 = 64-dim heads
             elif d_model == 768:
-                num_heads = 12
+                num_heads = 12  # Standard transformer: 768/12 = 64-dim heads
             elif d_model == 256:
-                num_heads = 8
+                num_heads = 8   # Small model: 256/8 = 32-dim heads
             else:
-                num_heads = min(8, d_model // 64)  # Default to 64-dim heads
+                num_heads = max(1, d_model // 64)  # Default to 64-dim heads
         else:
-            num_heads = 8  # Fallback
+            num_heads = 16 if d_model >= 1024 else 8  # Fallback based on model size
         
         # Extract hidden size from feed forward layers
         if 'encoder_layers.0.feed_forward.0.weight' in model_state:
-            hidden_size = model_state['encoder_layers.0.feed_forward.0.weight'].shape[0]
+            # The feed-forward layer goes from d_model to d_model*4, but hidden_size is separate
+            ff_hidden_size = model_state['encoder_layers.0.feed_forward.0.weight'].shape[0]
+            # Verify this is d_model * 4 as expected
+            if ff_hidden_size == d_model * 4:
+                # hidden_size parameter in FactLM config - match model_trainer.py defaults
+                if d_model >= 1024:
+                    hidden_size = 1024  # Large model from model_trainer.py
+                else:
+                    hidden_size = d_model  # Smaller models use d_model
+            else:
+                # Fallback if unexpected architecture
+                hidden_size = d_model
         else:
-            hidden_size = d_model * 4  # Common default
+            # Match model_trainer.py defaults based on model size
+            if d_model >= 1024:
+                hidden_size = 1024  # Large model configuration
+            else:
+                hidden_size = d_model  # Default for smaller models
+        
+        # Set dropout to match model_trainer.py defaults
+        if d_model >= 1024:
+            dropout = 0.15  # Large model dropout from model_trainer.py
+        else:
+            dropout = 0.2   # Previous model dropout
         
         model_config = {
             'vocab_size': vocab_size,
             'hidden_size': hidden_size,
             'num_layers': num_layers,
-            'dropout': 0.1,  # Default dropout
+            'dropout': dropout,
             'd_model': d_model,
             'max_len': 5000,  # Default max length
             'num_heads': num_heads
         }
         
-        print(f"   Reconstructed config: vocab_size={vocab_size}, d_model={d_model}, num_layers={num_layers}, num_heads={num_heads}")
+        # Validate the reconstructed config by comparing with defaults
+        default_config = get_default_model_config(vocab_size, d_model)
+        
+        # If reconstruction failed or seems inconsistent, use defaults
+        if num_layers == 0 or d_model < 64 or num_heads < 1:
+            print("   ⚠️  Config reconstruction failed, using default configuration")
+            model_config = default_config
+        else:
+            # Print what we reconstructed
+            print(f"   Reconstructed config: vocab_size={vocab_size}, d_model={d_model}, num_layers={num_layers}, num_heads={num_heads}")
+            print(f"   Architecture details: hidden_size={hidden_size}, dropout={dropout}")
+            
+            # Warn if reconstructed config differs significantly from expected defaults
+            if (d_model == default_config['d_model'] and 
+                (num_layers != default_config['num_layers'] or 
+                 num_heads != default_config['num_heads'])):
+                print(f"   ⚠️  Config differs from current defaults - this may be from an older model version")
+                print(f"   Default would be: layers={default_config['num_layers']}, heads={default_config['num_heads']}")
+        
+        print(f"   Final config: d_model={model_config['d_model']}, layers={model_config['num_layers']}, heads={model_config['num_heads']}")
     
     # Initialize model with configuration
     model = FactLM(**model_config)
