@@ -12,7 +12,7 @@ import math
 import random
 from datetime import datetime
 
-def train_model(model, train_data, val_data, epochs, batch_size, sequence_length, learning_rate, device, max_grad_norm=1.0):
+def train_model(model, train_data, val_data, epochs, batch_size, sequence_length, learning_rate, device, max_grad_norm=1.0, checkpoint_every=5, save_checkpoints=True):
     model.to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=0.1, betas=(0.9, 0.95))
     
@@ -45,6 +45,17 @@ def train_model(model, train_data, val_data, epochs, batch_size, sequence_length
     patience = 5
     patience_counter = 0
     
+    # Checkpoint setup
+    checkpoint_dir = None
+    if save_checkpoints:
+        # Create checkpoints directory with timestamp
+        os.makedirs('checkpoints', exist_ok=True)  # Ensure base directory exists
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S_UTC')
+        checkpoint_dir = os.path.join('checkpoints', f'training_{timestamp}')
+        os.makedirs(checkpoint_dir, exist_ok=True)
+        print(f"💾 Checkpoints will be saved to: {checkpoint_dir}")
+        print(f"   Saving every {checkpoint_every} epochs")
+    
     def lr_lambda(step):
         if step < warmup_steps:
             return max(0.1, step / warmup_steps)  # Minimum 10% of base LR
@@ -54,6 +65,72 @@ def train_model(model, train_data, val_data, epochs, batch_size, sequence_length
                 return 1.0  # No decay if no steps after warmup
             progress = (step - warmup_steps) / (total_steps - warmup_steps)
             return 0.5 * (1 + math.cos(progress * math.pi))
+    
+    def save_checkpoint(epoch, model, optimizer, scheduler, train_loss, val_loss, is_best=False):
+        """Save a training checkpoint"""
+        if not save_checkpoints or checkpoint_dir is None:
+            return
+            
+        checkpoint_data = {
+            'epoch': epoch,
+            'model_state_dict': model.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+            'scheduler_state_dict': scheduler.state_dict(),
+            'train_loss': train_loss,
+            'val_loss': val_loss,
+            'best_val_loss': best_val_loss,
+            'batch_size': batch_size,
+            'sequence_length': sequence_length,
+            'learning_rate': learning_rate,
+            'max_grad_norm': max_grad_norm,
+            'step': step
+        }
+        
+        # Save regular checkpoint
+        if epoch % checkpoint_every == 0 or is_best:
+            if is_best:
+                checkpoint_path = os.path.join(checkpoint_dir, 'best_model.pth')
+                print(f"💾 Saving BEST checkpoint: {checkpoint_path}")
+            else:
+                checkpoint_path = os.path.join(checkpoint_dir, f'checkpoint_epoch_{epoch:03d}.pth')
+                print(f"💾 Saving checkpoint: {checkpoint_path}")
+            
+            torch.save(checkpoint_data, checkpoint_path)
+        
+        # Always save latest checkpoint (for resuming)
+        latest_path = os.path.join(checkpoint_dir, 'latest_checkpoint.pth')
+        torch.save(checkpoint_data, latest_path)
+    
+    def load_checkpoint(checkpoint_path, model, optimizer, scheduler):
+        """Load a training checkpoint for resuming training"""
+        if not os.path.exists(checkpoint_path):
+            print(f"❌ Checkpoint not found: {checkpoint_path}")
+            return None
+        
+        print(f"📂 Loading checkpoint: {checkpoint_path}")
+        checkpoint = torch.load(checkpoint_path, map_location='cpu')
+        
+        # Load model state
+        model.load_state_dict(checkpoint['model_state_dict'])
+        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+        
+        # Return training state information
+        resume_info = {
+            'epoch': checkpoint['epoch'],
+            'best_val_loss': checkpoint['best_val_loss'],
+            'train_loss': checkpoint['train_loss'],
+            'val_loss': checkpoint['val_loss'],
+            'step': checkpoint['step']
+        }
+        
+        print(f"✅ Checkpoint loaded successfully!")
+        print(f"   Resuming from epoch {resume_info['epoch']}")
+        print(f"   Best validation loss: {resume_info['best_val_loss']:.4f}")
+        print(f"   Last train loss: {resume_info['train_loss']:.4f}")
+        print(f"   Last validation loss: {resume_info['val_loss']:.4f}")
+        
+        return resume_info
     
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
     criterion = nn.CrossEntropyLoss()  # Use CrossEntropyLoss since model now outputs raw logits
@@ -142,17 +219,23 @@ def train_model(model, train_data, val_data, epochs, batch_size, sequence_length
         current_lr = scheduler.get_last_lr()[0]
         
         # Early stopping check
+        is_best_model = False
         if avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
             patience_counter = 0
+            is_best_model = True
             print(f"Epoch {epoch+1}/{epochs}, Train Loss: {avg_train_loss:.4f}, Val Loss: {avg_val_loss:.4f}, Grad Norm: {avg_grad_norm:.4f}, LR: {current_lr:.6f} ⭐ NEW BEST!")
         else:
             patience_counter += 1
             print(f"Epoch {epoch+1}/{epochs}, Train Loss: {avg_train_loss:.4f}, Val Loss: {avg_val_loss:.4f}, Grad Norm: {avg_grad_norm:.4f}, LR: {current_lr:.6f} (patience: {patience_counter}/{patience})")
-            
-            if patience_counter >= patience:
-                print(f"Early stopping triggered! No improvement for {patience} epochs.")
-                break
+        
+        # Save checkpoints
+        save_checkpoint(epoch + 1, model, optimizer, scheduler, avg_train_loss, avg_val_loss, is_best=is_best_model)
+        
+        # Check for early stopping
+        if patience_counter >= patience:
+            print(f"Early stopping triggered! No improvement for {patience} epochs.")
+            break
 
     return model, batch_size, sequence_length
 
@@ -655,6 +738,9 @@ def load_saved_model(model_path, tokenizer):
 if __name__ == "__main__":
     print("🚀 FactLM Training with Books + UltraChat Data")
     print("=" * 60)
+    print("📝 Features: Multi-source training, automatic checkpointing every 5 epochs")
+    print("💾 Checkpoints saved to: checkpoints/training_TIMESTAMP/")
+    print("🔄 Resume training by modifying this script to load from checkpoint")
     
     # Load books
     print("\n📚 Loading and processing book data...")
@@ -779,11 +865,13 @@ if __name__ == "__main__":
     sequence_length = 256  # Keep reasonable sequence length
     learning_rate = 0.0002 # Lower learning rate for stability
     max_grad_norm = 1.0   # Gradient clipping
+    checkpoint_every = 5  # Save checkpoint every 5 epochs
     
     print(f"\n⚙️  Training configuration:")
     print(f"Device: {device} ({device_name})")
     print(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
     print(f"Batch configuration: {batch_size} sequences × {sequence_length} tokens = {batch_size * sequence_length:,} tokens per batch")
+    print(f"Checkpoint frequency: Every {checkpoint_every} epochs")
     
     # Check if configuration is reasonable for dataset size
     total_tokens_needed = batch_size * sequence_length
@@ -825,7 +913,9 @@ if __name__ == "__main__":
         sequence_length=sequence_length,
         learning_rate=learning_rate,
         device=device,
-        max_grad_norm=max_grad_norm
+        max_grad_norm=max_grad_norm,
+        checkpoint_every=checkpoint_every,
+        save_checkpoints=True
     )
     
     # Update training stats with final batch configuration

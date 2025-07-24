@@ -48,7 +48,39 @@ The script will automatically:
 - Combine and shuffle the training data
 - Split into training/validation sets (80/20)
 - Train the model for the specified epochs
+- Save checkpoints every 5 epochs (configurable)
 - Save the trained model with comprehensive metadata
+
+### Checkpoint Management
+
+The training process automatically saves checkpoints:
+- **Regular checkpoints**: Every 5 epochs (by default)
+- **Best model checkpoint**: Whenever validation loss improves
+- **Latest checkpoint**: Always maintained for resuming training
+
+Checkpoints are saved in timestamped directories under `checkpoints/` and include:
+- Model state (weights and biases)
+- Optimizer state (momentum, learning rate schedule)
+- Training progress (epoch, losses, step count)
+
+To resume training from a checkpoint, you can modify the training script to load from `checkpoints/training_TIMESTAMP/latest_checkpoint.pth`.
+
+#### Resuming Training Example
+
+```python
+# After creating model, optimizer, and scheduler, load checkpoint
+resume_info = load_checkpoint(
+    checkpoint_path="checkpoints/training_20250115_143022_UTC/latest_checkpoint.pth",
+    model=model,
+    optimizer=optimizer,
+    scheduler=scheduler
+)
+
+# Continue training from the loaded epoch
+if resume_info:
+    start_epoch = resume_info['epoch']
+    best_val_loss = resume_info['best_val_loss']
+```
 
 ### Training Data Sources
 
@@ -110,6 +142,7 @@ FactLM/
 │   ├── book1.txt       # Training text files
 │   └── book2.txt
 ├── models/             # Saved models directory
+├── checkpoints/        # Training checkpoints directory
 ├── requirements.txt    # Dependencies
 └── README.md
 ```
