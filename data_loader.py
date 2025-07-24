@@ -5,6 +5,7 @@ This module handles loading and processing of training data from multiple source
 - Project Gutenberg books (text files)
 - UltraChat conversational data (Hugging Face datasets)
 - Generated training data (from generate_training_data.py)
+- Wikipedia articles (Hugging Face datasets)
 
 Functions are designed to be used by model_trainer.py and other training scripts.
 """
@@ -173,6 +174,41 @@ def load_ultrachat_data(dataset_name="stingning/ultrachat", num_samples=50000, s
         return None
 
 
+def load_wikipedia_data(dataset_name="wikimedia/wikipedia", subset="20231101.en", num_samples=50000, seed=42):
+    """Load and sample Wikipedia dataset from Hugging Face"""
+    print(f"Loading Wikipedia dataset: {dataset_name}")
+    print(f"Using subset: {subset}")
+    print(f"Sampling {num_samples:,} articles (seed={seed})")
+    
+    try:
+        # Load the dataset
+        dataset = load_dataset(dataset_name, subset)
+        print(f"Wikipedia dataset loaded successfully!")
+        print(f"Available splits: {list(dataset.keys())}")
+        
+        # Use train split (Wikipedia only has train split)
+        data_split = dataset['train']
+        print(f"Total articles in dataset: {len(data_split):,}")
+        
+        # Sample articles if dataset is larger than requested
+        if len(data_split) > num_samples:
+            print(f"Sampling {num_samples:,} articles from {len(data_split):,} total...")
+            # Set seed for reproducible sampling
+            random.seed(seed)
+            indices = random.sample(range(len(data_split)), num_samples)
+            sampled_data = data_split.select(indices)
+        else:
+            print(f"Using all {len(data_split):,} articles")
+            sampled_data = data_split
+        
+        return sampled_data
+        
+    except Exception as e:
+        print(f"❌ Error loading Wikipedia dataset: {e}")
+        print("   Make sure you have the datasets library installed: pip install datasets")
+        return None
+
+
 def process_ultrachat_conversations(ultrachat_data, tokenizer):
     """Convert UltraChat conversations to training format"""
     if ultrachat_data is None:
@@ -310,6 +346,53 @@ def process_generated_conversations(generated_data, tokenizer):
     return all_tokens
 
 
+def process_wikipedia_articles(wikipedia_data, tokenizer):
+    """Convert Wikipedia articles to training format"""
+    if wikipedia_data is None:
+        return []
+    
+    print(f"Processing {len(wikipedia_data):,} Wikipedia articles...")
+    
+    all_tokens = []
+    processed_articles = 0
+    
+    for example in wikipedia_data:
+        try:
+            # Wikipedia format: each example has 'id', 'url', 'title', 'text' fields
+            article_text = example.get('text', '')
+            article_title = example.get('title', '')
+            
+            if not article_text or len(article_text.strip()) < 100:
+                continue  # Skip very short articles
+            
+            # Format article with title as header
+            formatted_text = f"# {article_title}\n\n{article_text}\n\n"
+            
+            # Add article end marker
+            formatted_text += "<|endofarticle|>\n\n"
+            
+            # Tokenize the article
+            tokens = tokenizer.encode(formatted_text, add_special_tokens=False)
+            all_tokens.extend(tokens)
+            
+            # Add EOS token between articles
+            all_tokens.append(tokenizer.eos_token_id)
+            
+            processed_articles += 1
+            
+            # Progress reporting
+            if processed_articles % 5000 == 0:
+                print(f"  Processed {processed_articles:,} articles...")
+                
+        except Exception as e:
+            print(f"⚠️  Error processing article: {e}")
+            continue
+    
+    print(f"✅ Processed {processed_articles:,} Wikipedia articles into {len(all_tokens):,} tokens")
+    
+    return all_tokens
+
+
 def combine_training_data(book_tokens, ultrachat_tokens, tokenizer, train_split=0.8):
     """Combine book and UltraChat data into training/validation sets"""
     print(f"\nCombining training data:")
@@ -336,15 +419,16 @@ def combine_training_data(book_tokens, ultrachat_tokens, tokenizer, train_split=
     return train_data, val_data
 
 
-def combine_all_training_data(book_tokens, ultrachat_tokens, generated_tokens, tokenizer, train_split=0.8):
-    """Combine book, UltraChat, and generated data into training/validation sets"""
+def combine_all_training_data(book_tokens, ultrachat_tokens, generated_tokens, wikipedia_tokens, tokenizer, train_split=0.8):
+    """Combine book, UltraChat, generated, and Wikipedia data into training/validation sets"""
     print(f"\nCombining all training data:")
     print(f"  Book tokens: {len(book_tokens):,}")
     print(f"  UltraChat tokens: {len(ultrachat_tokens):,}")
     print(f"  Generated tokens: {len(generated_tokens):,}")
+    print(f"  Wikipedia tokens: {len(wikipedia_tokens):,}")
     
     # Combine all tokens - preserving sequence structure
-    all_tokens = book_tokens + ultrachat_tokens + generated_tokens
+    all_tokens = book_tokens + ultrachat_tokens + generated_tokens + wikipedia_tokens
     total_tokens = len(all_tokens)
     
     print(f"  Total combined tokens: {total_tokens:,}")
@@ -492,17 +576,52 @@ def print_book_samples(book_text, tokenizer, max_samples=10):
     print(f"\n   Total book text: {len(book_text):,} characters")
 
 
+def print_wikipedia_samples(wikipedia_data, max_samples=10):
+    """Print samples from Wikipedia articles"""
+    print(f"\n📋 Sample Wikipedia articles:")
+    print("-" * 60)
+    
+    count = 0
+    for i, article in enumerate(wikipedia_data):
+        if count >= max_samples:
+            break
+            
+        try:
+            title = article.get('title', 'Unknown Title')
+            text = article.get('text', '')
+            url = article.get('url', '')
+            
+            if len(text) > 50:  # Skip very short articles
+                # Truncate text for readability
+                text_display = text[:300] + "..." if len(text) > 300 else text
+                # Clean up text formatting
+                clean_text = ' '.join(text_display.split())
+                
+                print(f"\n{count+1:2d}. TITLE: {title}")
+                print(f"   URL:   {url}")
+                print(f"   TEXT:  {clean_text}")
+                count += 1
+                    
+        except Exception as e:
+            continue
+    
+    if len(wikipedia_data) > max_samples:
+        print(f"\n   ... and {len(wikipedia_data) - max_samples} more articles")
+
+
 def load_and_process_all_data(data_dir='data', 
-                             ultrachat_samples=75000,  # Updated default to 75K
+                             ultrachat_samples=15000,  # Updated default to 15K
+                             wikipedia_samples=25000,  # Updated default to 25K
                              generated_data_file="temp_generated_training_data.json",  # Changed to temp file
                              train_split=0.8, 
                              seed=42):
     """
-    Complete data loading pipeline - loads books, UltraChat, and generated data, processes and combines them
+    Complete data loading pipeline - loads books, UltraChat, generated data, and Wikipedia, processes and combines them
     
     Args:
         data_dir (str): Directory containing book*.txt files
-        ultrachat_samples (int): Number of UltraChat conversations to sample
+        ultrachat_samples (int): Number of UltraChat conversations to sample (default: 15K)
+        wikipedia_samples (int): Number of Wikipedia articles to sample (default: 25K)
         generated_data_file (str): Path to generated training data JSON file
         train_split (float): Fraction of data to use for training (rest for validation)
         seed (int): Random seed for reproducible sampling
@@ -512,7 +631,7 @@ def load_and_process_all_data(data_dir='data',
     """
     from transformers import AutoTokenizer
     
-    print("🔄 Starting data loading pipeline (BOOKS + ULTRACHAT + GENERATED)...")
+    print("🔄 Starting data loading pipeline (BOOKS + ULTRACHAT + GENERATED + WIKIPEDIA)...")
     
     # Load tokenizer
     print("\n🔤 Loading tokenizer...")
@@ -535,7 +654,7 @@ def load_and_process_all_data(data_dir='data',
     print("\n💬 Loading UltraChat dataset...")
     ultrachat_data = load_ultrachat_data(
         dataset_name="stingning/ultrachat",
-        num_samples=ultrachat_samples,  # Use the parameter value (now 75K)
+        num_samples=ultrachat_samples,  # Use the parameter value (now 15K)
         seed=seed
     )
     
@@ -567,10 +686,31 @@ def load_and_process_all_data(data_dir='data',
         print("⚠️  No generated training data found - this will result in empty dataset!")
         print(f"     Make sure {generated_data_file} exists")
     
+    # Load Wikipedia data
+    print("\n📚 Loading Wikipedia dataset...")
+    wikipedia_data = load_wikipedia_data(
+        dataset_name="wikimedia/wikipedia",
+        subset="20231101.en",
+        num_samples=wikipedia_samples, # Use the parameter value (now 25K)
+        seed=seed
+    )
+    
+    # Print Wikipedia samples (if loaded successfully)
+    if wikipedia_data is not None:
+        print_wikipedia_samples(wikipedia_data, max_samples=10)
+    
+    # Process Wikipedia articles
+    wikipedia_tokens = []
+    if wikipedia_data is not None:
+        print("\n🔄 Processing Wikipedia articles...")
+        wikipedia_tokens = process_wikipedia_articles(wikipedia_data, tokenizer)
+    else:
+        print("⚠️  Skipping Wikipedia data due to loading error")
+    
     # Combine all training data (books + UltraChat + generated data active)
-    print("\n🔗 Combining training data (BOOKS + ULTRACHAT + GENERATED)...")
+    print("\n🔗 Combining training data (BOOKS + ULTRACHAT + GENERATED + Wikipedia)...")
     train_data, val_data = combine_all_training_data(
-        book_tokens, ultrachat_tokens, generated_tokens, tokenizer, train_split=train_split
+        book_tokens, ultrachat_tokens, generated_tokens, wikipedia_tokens, tokenizer, train_split=train_split
     )
     
     # Prepare statistics
@@ -582,6 +722,8 @@ def load_and_process_all_data(data_dir='data',
         'ultrachat_conversations': len(ultrachat_data) if ultrachat_data else 0,
         'generated_tokens': len(generated_tokens),
         'generated_conversations': len(generated_data) if generated_data else 0,
+        'wikipedia_tokens': len(wikipedia_tokens),
+        'wikipedia_articles': len(wikipedia_data) if wikipedia_data else 0,
         'total_tokens': len(train_data) + len(val_data),
         'train_tokens': len(train_data),
         'val_tokens': len(val_data),
@@ -593,6 +735,7 @@ def load_and_process_all_data(data_dir='data',
     print(f"   📚 Book tokens: {data_stats['book_tokens']:,} (ACTIVE)")
     print(f"   💬 UltraChat tokens: {data_stats['ultrachat_tokens']:,} (ACTIVE)")
     print(f"   🤖 Generated tokens: {data_stats['generated_tokens']:,} (ACTIVE)")
+    print(f"   📚 Wikipedia tokens: {data_stats['wikipedia_tokens']:,} (ACTIVE)")
     print(f"   🔄 Train/Val split: {len(train_data):,} / {len(val_data):,}")
     
     # Show data source proportions
@@ -600,7 +743,8 @@ def load_and_process_all_data(data_dir='data',
         book_pct = (data_stats['book_tokens'] / data_stats['total_tokens']) * 100
         ultrachat_pct = (data_stats['ultrachat_tokens'] / data_stats['total_tokens']) * 100
         gen_pct = (data_stats['generated_tokens'] / data_stats['total_tokens']) * 100
-        print(f"   📊 Data mix: {book_pct:.1f}% books, {ultrachat_pct:.1f}% UltraChat, {gen_pct:.1f}% generated")
+        wiki_pct = (data_stats['wikipedia_tokens'] / data_stats['total_tokens']) * 100
+        print(f"   📊 Data mix: {book_pct:.1f}% books, {ultrachat_pct:.1f}% UltraChat, {gen_pct:.1f}% generated, {wiki_pct:.1f}% Wikipedia")
     
     if data_stats['generated_tokens'] == 0:
         print(f"\n⚠️  WARNING: No generated tokens found!")

@@ -45,7 +45,7 @@ def train_model(model, train_data, val_data, epochs, batch_size, sequence_length
         
         # Auto-adjust batch size to have at least 10 steps per epoch
         max_batch_tokens = len(train_data) // 10
-        sequence_length = min(sequence_length, 256)  # Cap sequence length
+        sequence_length = min(sequence_length, 512)  # Cap sequence length to new max
         batch_size = max(1, max_batch_tokens // sequence_length)
         
         print(f"   New config: batch_size={batch_size}, sequence_length={sequence_length}")
@@ -354,8 +354,26 @@ def save_model(model, tokenizer, model_config, training_stats, device_name):
                 f.write(f"- Dataset: stingning/ultrachat\n")
                 f.write(f"- Conversations: {training_stats.get('ultrachat_conversations', 0):,}\n")
                 f.write(f"- Tokens: {training_stats['ultrachat_tokens']:,}\n")
-                f.write(f"- Book tokens: {training_stats.get('book_tokens', 0):,}\n")
-                f.write(f"- Total tokens ratio: {training_stats['ultrachat_tokens'] / (training_stats.get('book_tokens', 1) + training_stats['ultrachat_tokens']):.1%} UltraChat, {training_stats.get('book_tokens', 0) / (training_stats.get('book_tokens', 1) + training_stats['ultrachat_tokens']):.1%} Books\n")
+            
+            if 'wikipedia_tokens' in training_stats and training_stats['wikipedia_tokens'] > 0:
+                f.write(f"\nWikipedia Data:\n")
+                f.write(f"- Dataset: wikimedia/wikipedia (20231101.en)\n")
+                f.write(f"- Articles: {training_stats.get('wikipedia_articles', 0):,}\n")
+                f.write(f"- Tokens: {training_stats['wikipedia_tokens']:,}\n")
+            
+            # Data mix summary
+            if 'ultrachat_tokens' in training_stats or 'wikipedia_tokens' in training_stats:
+                total_tokens = (training_stats.get('book_tokens', 0) + 
+                               training_stats.get('ultrachat_tokens', 0) + 
+                               training_stats.get('wikipedia_tokens', 0))
+                if total_tokens > 0:
+                    book_pct = training_stats.get('book_tokens', 0) / total_tokens
+                    ultrachat_pct = training_stats.get('ultrachat_tokens', 0) / total_tokens
+                    wiki_pct = training_stats.get('wikipedia_tokens', 0) / total_tokens
+                    f.write(f"\nData Mix:\n")
+                    f.write(f"- Books: {book_pct:.1%} ({training_stats.get('book_tokens', 0):,} tokens)\n")
+                    f.write(f"- UltraChat: {ultrachat_pct:.1%} ({training_stats.get('ultrachat_tokens', 0):,} tokens)\n")
+                    f.write(f"- Wikipedia: {wiki_pct:.1%} ({training_stats.get('wikipedia_tokens', 0):,} tokens)\n")
     
     print(f"✅ Model saved: {model_path}")
     print(f"✅ Metadata saved: {metadata_path}")
@@ -367,15 +385,16 @@ def save_model(model, tokenizer, model_config, training_stats, device_name):
 if __name__ == "__main__":
     print("🚀 FactLM Training - Efficient Model")
     print("=" * 50)
-    print("📝 Features: Smaller model (d_model=256), automatic checkpointing every 5 epochs")
-    print("📈 Dataset: Books + 75K UltraChat + Generated data")
+    print("📝 Features: Smaller model (d_model=256), 512-token sequences, automatic checkpointing")
+    print("📈 Dataset: Books + 15K UltraChat + Generated data + 25K Wikipedia")
     print("💾 Checkpoints saved to: checkpoints/training_TIMESTAMP/")
     print("🔄 Resume training by modifying this script to load from checkpoint")
     
     # Load and process all data using the data_loader module
     training_data, validation_data, data_stats = load_and_process_all_data(
         data_dir='data',
-        ultrachat_samples=75000,  # 75K UltraChat conversations (increased from 25K)
+        ultrachat_samples=15000,  # 15K UltraChat conversations (reduced from 50K)
+        wikipedia_samples=25000,  # 25K Wikipedia articles (reduced from 50K)
         train_split=0.8,
         seed=42
     )
@@ -445,8 +464,8 @@ if __name__ == "__main__":
         print("Using CPU as fallback")
     
     epochs = 25           # Keep same epochs for good training
-    batch_size = 48       # Increased batch size due to smaller model
-    sequence_length = 256  # Keep reasonable sequence length
+    batch_size = 24       # Reduced due to doubled sequence length (was 48)
+    sequence_length = 512  # Increased from 256 for better long-context learning
     learning_rate = 0.0003 # Slightly increased LR for smaller model
     max_grad_norm = 1.0   # Gradient clipping
     checkpoint_every = 5  # Save checkpoint every 5 epochs
@@ -455,7 +474,7 @@ if __name__ == "__main__":
     print(f"Device: {device} ({device_name})")
     print(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
     print(f"Batch configuration: {batch_size} sequences × {sequence_length} tokens = {batch_size * sequence_length:,} tokens per batch")
-    print(f"🚀 EFFICIENT: Smaller model with d_model={model_config['d_model']}, layers={model_config['num_layers']}, heads={model_config['num_heads']}")
+    print(f"🚀 LONG CONTEXT: Doubled sequence length to {sequence_length} tokens for better conversation understanding")
     print(f"Checkpoint frequency: Every {checkpoint_every} epochs")
     print(f"💡 Head dimension: {head_dim} (optimized for efficiency)")
     
@@ -464,14 +483,16 @@ if __name__ == "__main__":
     if total_tokens_needed > len(training_data) // 2:
         print(f"⚠️  Batch size may be too large for dataset ({total_tokens_needed:,} tokens per batch vs {len(training_data):,} total tokens)")
         print("   The training function will auto-adjust if needed...")
+        print(f"   Current config: {batch_size} × {sequence_length} = {total_tokens_needed:,} tokens per batch")
     
     estimated_memory_mb = (batch_size * sequence_length * model_config['d_model'] * 4) // (1024**2)
     print(f"Estimated GPU memory usage: ~{estimated_memory_mb}MB per batch")
     
-    if estimated_memory_mb > 4000:  # More than 4GB per batch
+    if estimated_memory_mb > 6000:  # More than 6GB per batch (increased due to longer sequences)
         print("⚠️  High memory usage detected! Monitor GPU memory during training")
+        print(f"   Consider reducing batch_size if you get OOM errors")
     else:
-        print(f"✅ Memory usage looks efficient: ~{estimated_memory_mb}MB per batch")
+        print(f"✅ Memory usage looks reasonable: ~{estimated_memory_mb}MB per batch (longer sequences)")
     
     # Train the model
     print("\n🎯 Starting training...")
@@ -489,7 +510,9 @@ if __name__ == "__main__":
         'book_files': data_stats['book_files'],
         'book_tokens': data_stats['book_tokens'],
         'ultrachat_tokens': data_stats['ultrachat_tokens'],
-        'ultrachat_conversations': data_stats['ultrachat_conversations']
+        'ultrachat_conversations': data_stats['ultrachat_conversations'],
+        'wikipedia_tokens': data_stats['wikipedia_tokens'],
+        'wikipedia_articles': data_stats['wikipedia_articles']
     }
     
     trained_model, final_batch_size, final_sequence_length = train_model(
