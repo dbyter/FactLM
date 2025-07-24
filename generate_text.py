@@ -461,58 +461,120 @@ def main():
     print("FACTLM TEXT GENERATION")
     print("="*60)
     
-    # Test with predefined prompts
-    print("\n🤖 Testing with predefined prompts:")
-    
-    # Single balanced configuration for all generation - optimized for quality
-    generation_config = {
-        "temperature": 0.6,  # Increased for more natural variation (was 0.2)
-        "repetition_penalty": 2.2,  # Much stronger anti-repetition (was 1.5)
-        "top_k": 25,  # More selective token choice (was 40)
-        "top_p": 0.85  # Slightly more focused (was 0.9)
+    # Multiple sampling configurations for different output styles
+    sampling_configs = {
+        "conservative": {
+            "name": "Conservative (Best Quality)",
+            "temperature": 0.4,
+            "repetition_penalty": 2.5,
+            "top_k": 15,
+            "top_p": 0.75,
+            "description": "Focused, high-quality, predictable outputs"
+        },
+        "balanced": {
+            "name": "Balanced (Recommended)",
+            "temperature": 0.6,
+            "repetition_penalty": 2.2,
+            "top_k": 25,
+            "top_p": 0.85,
+            "description": "Good balance of quality and creativity"
+        },
+        "creative": {
+            "name": "Creative (Experimental)",
+            "temperature": 0.9,
+            "repetition_penalty": 1.8,
+            "top_k": 40,
+            "top_p": 0.95,
+            "description": "More diverse, creative, and experimental outputs"
+        }
     }
     
-    for prompt in test_prompts[:3]:  # Test first 3 prompts
-        print(f"\nPrompt: '{prompt}'")
+    # Test with predefined prompts using all configurations
+    print("\n🤖 Testing with predefined prompts (all sampling modes):")
+    
+    for config_name, config in sampling_configs.items():
+        print(f"\n{'='*40}")
+        print(f"🎯 {config['name']}")
+        print(f"   {config['description']}")
+        print(f"   Settings: temp={config['temperature']}, rep_penalty={config['repetition_penalty']}, top_k={config['top_k']}, top_p={config['top_p']}")
+        print('='*40)
         
-        generated = generate_text(
-            model=model,
-            start_string=prompt,
-            max_length=25,  # Much shorter for better quality (was 40)
-            temperature=generation_config["temperature"],
-            repetition_penalty=generation_config["repetition_penalty"],
-            top_k=generation_config["top_k"],
-            top_p=generation_config["top_p"],
-            tokenizer=tokenizer
-        )
-        print(f"  Generated: {generated}")
-    
-    # Interactive mode
-    print(f"\n{'='*60}")
-    print("💬 Interactive mode (type 'quit' to exit):")
-    print(f"Using: temp={generation_config['temperature']}, rep_penalty={generation_config['repetition_penalty']}, top_k={generation_config['top_k']}, top_p={generation_config['top_p']}")
-    print("="*60)
-    
-    while True:
-        try:
-            prompt = input("\nEnter your prompt: ").strip()
-            
-            if prompt.lower() in ['quit', 'exit', 'q']:
-                break
-                
-            if not prompt:
-                continue
-            
-            print(f"\nGenerating response for: '{prompt}'")
+        for prompt in test_prompts[:2]:  # Test first 2 prompts per config
+            print(f"\nPrompt: '{prompt}'")
             
             generated = generate_text(
                 model=model,
                 start_string=prompt,
-                max_length=35,  # Shorter for better quality (was 60)
-                temperature=generation_config["temperature"],
-                repetition_penalty=generation_config["repetition_penalty"],
-                top_k=generation_config["top_k"],
-                top_p=generation_config["top_p"],
+                max_length=25,
+                temperature=config["temperature"],
+                repetition_penalty=config["repetition_penalty"],
+                top_k=config["top_k"],
+                top_p=config["top_p"],
+                tokenizer=tokenizer
+            )
+            print(f"  Generated: {generated}")
+    
+    # Interactive mode with configuration selection
+    print(f"\n{'='*60}")
+    print("💬 Interactive mode (type 'quit' to exit):")
+    print("🎛️  Available sampling modes:")
+    for key, config in sampling_configs.items():
+        print(f"   {key}: {config['name']} - {config['description']}")
+    print("="*60)
+    
+    # Default to balanced mode
+    current_config = "balanced"
+    current_settings = sampling_configs[current_config]
+    
+    print(f"\n🎯 Current mode: {current_settings['name']}")
+    print(f"💡 Type 'mode <conservative|balanced|creative>' to change sampling mode")
+    print(f"💡 Type 'settings' to see current configuration")
+    
+    while True:
+        try:
+            user_input = input("\nEnter your prompt (or command): ").strip()
+            
+            if user_input.lower() in ['quit', 'exit', 'q']:
+                break
+                
+            if not user_input:
+                continue
+            
+            # Handle mode switching
+            if user_input.lower().startswith('mode '):
+                new_mode = user_input.lower().replace('mode ', '').strip()
+                if new_mode in sampling_configs:
+                    current_config = new_mode
+                    current_settings = sampling_configs[current_config]
+                    print(f"✅ Switched to {current_settings['name']}")
+                    print(f"   {current_settings['description']}")
+                    continue
+                else:
+                    print(f"❌ Unknown mode '{new_mode}'. Available: {', '.join(sampling_configs.keys())}")
+                    continue
+            
+            # Handle settings display
+            if user_input.lower() == 'settings':
+                print(f"\n🎯 Current: {current_settings['name']}")
+                print(f"   Temperature: {current_settings['temperature']}")
+                print(f"   Repetition Penalty: {current_settings['repetition_penalty']}")
+                print(f"   Top-K: {current_settings['top_k']}")
+                print(f"   Top-P: {current_settings['top_p']}")
+                print(f"   Description: {current_settings['description']}")
+                continue
+            
+            # Generate text with current configuration
+            print(f"\n🎯 Generating with {current_settings['name']} mode...")
+            print(f"Prompt: '{user_input}'")
+            
+            generated = generate_text(
+                model=model,
+                start_string=user_input,
+                max_length=35,
+                temperature=current_settings["temperature"],
+                repetition_penalty=current_settings["repetition_penalty"],
+                top_k=current_settings["top_k"],
+                top_p=current_settings["top_p"],
                 tokenizer=tokenizer
             )
             print(f"  Response: {generated}")
