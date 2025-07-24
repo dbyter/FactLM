@@ -34,7 +34,7 @@ def get_default_model_config(vocab_size, d_model=None):
     }
 
 
-def generate_text(model, start_string, max_length, temperature=0.8, tokenizer=None, repetition_penalty=1.2, top_k=50, top_p=0.9):
+def generate_text(model, start_string, max_length, temperature=0.8, tokenizer=None, repetition_penalty=1.2, top_k=50, top_p=0.9, debug=False):
     """Generate text using the trained model with advanced sampling and anti-repetition"""
     model.eval()
     device = next(model.parameters()).device
@@ -42,10 +42,20 @@ def generate_text(model, start_string, max_length, temperature=0.8, tokenizer=No
     if tokenizer is None:
         raise ValueError("Tokenizer is required for text generation")
     
+    if debug:
+        print(f"\n🔍 DEBUG MODE: Generating text for '{start_string}'")
+        print(f"   Settings: temp={temperature}, rep_penalty={repetition_penalty}, top_k={top_k}, top_p={top_p}")
+        print("=" * 80)
+    
     # Tokenize the start string
     tokens = tokenizer.encode(start_string, add_special_tokens=True)
     input_ids = torch.tensor(tokens, dtype=torch.long).unsqueeze(0).to(device)
     generated_tokens = input_ids.clone()
+    
+    if debug:
+        print(f"📝 Input tokens: {tokens}")
+        print(f"📝 Input decoded: '{tokenizer.decode(tokens)}'")
+        print("=" * 80)
     
     with torch.no_grad():
         for step in range(max_length):
@@ -56,6 +66,11 @@ def generate_text(model, start_string, max_length, temperature=0.8, tokenizer=No
             outputs = model(context)
             logits = outputs[0, -1, :].clone()
             
+            if debug:
+                print(f"\n🔸 Step {step + 1}:")
+                print(f"   Context length: {context.size(1)} tokens")
+                print(f"   Generated so far: '{tokenizer.decode(generated_tokens[0], skip_special_tokens=True)}'")
+            
             # Simple repetition penalty
             if repetition_penalty != 1.0:
                 generated_list = generated_tokens[0].tolist()
@@ -63,6 +78,10 @@ def generate_text(model, start_string, max_length, temperature=0.8, tokenizer=No
                 # Apply standard repetition penalty to previously generated tokens
                 for token_id in set(generated_list):
                     logits[token_id] /= repetition_penalty
+            
+            # Store original logits for debugging
+            if debug:
+                original_logits = logits.clone()
             
             # Apply temperature
             logits = logits / temperature
@@ -85,12 +104,37 @@ def generate_text(model, start_string, max_length, temperature=0.8, tokenizer=No
                 indices_to_remove = sorted_indices_to_remove.scatter(0, sorted_indices, sorted_indices_to_remove)
                 logits[indices_to_remove] = float('-inf')
             
+            # Get top 5 tokens for debugging
+            if debug:
+                # Before sampling
+                probs_before_sampling = torch.softmax(logits, dim=-1)
+                top5_probs, top5_indices = torch.topk(probs_before_sampling, 5)
+                
+                print(f"   🏆 Top 5 candidates:")
+                for i, (prob, idx) in enumerate(zip(top5_probs, top5_indices)):
+                    token_text = tokenizer.decode([idx.item()], skip_special_tokens=True)
+                    # Handle special tokens and weird characters
+                    if not token_text.strip():
+                        token_text = f"<TOKEN_{idx.item()}>"
+                    original_logit = original_logits[idx.item()].item()
+                    final_logit = logits[idx.item()].item()
+                    print(f"      {i+1}. '{token_text}' (ID: {idx.item()}) - Prob: {prob.item():.4f} | Logit: {original_logit:.2f} → {final_logit:.2f}")
+            
             # Sample next token
             probs = torch.softmax(logits, dim=-1)
             next_token = torch.multinomial(probs, 1)
             
+            if debug:
+                chosen_token_text = tokenizer.decode([next_token.item()], skip_special_tokens=True)
+                if not chosen_token_text.strip():
+                    chosen_token_text = f"<TOKEN_{next_token.item()}>"
+                chosen_prob = probs[next_token.item()].item()
+                print(f"   ✅ CHOSEN: '{chosen_token_text}' (ID: {next_token.item()}) - Prob: {chosen_prob:.4f}")
+            
             # Stop conditions
             if next_token.item() == tokenizer.eos_token_id:
+                if debug:
+                    print(f"   🛑 Stopping: EOS token detected")
                 break
             
             # Enhanced repetition detection - much more aggressive for quality
@@ -101,13 +145,15 @@ def generate_text(model, start_string, max_length, temperature=0.8, tokenizer=No
                 # Check for immediate token repetition (same token 3+ times in a row)
                 if len(generated_list) >= 3:
                     if generated_list[-1] == generated_list[-2] == generated_list[-3]:
-                        print(f"   Stopping: Immediate token repetition detected")
+                        if debug:
+                            print(f"   🛑 Stopping: Immediate token repetition detected")
                         break
                 
                 # Stop on natural sentence endings (more permissive)
                 if step > 10:
                     if any(current_text.rstrip().endswith(punct) for punct in ['.', '!', '?']):
-                        print(f"   Stopping: Natural sentence ending detected")
+                        if debug:
+                            print(f"   🛑 Stopping: Natural sentence ending detected")
                         break
             
             # Add token to sequence
@@ -120,11 +166,21 @@ def generate_text(model, start_string, max_length, temperature=0.8, tokenizer=No
                 # Check if we just completed a sentence and have enough content
                 if any(current_text.rstrip().endswith(punct) for punct in ['.', '!', '?']):
                     if len(current_text.split()) >= 10:  # At least 10 words
+                        if debug:
+                            print(f"   🛑 Stopping: Complete sentence with enough content")
                         break
     
     # Decode the generated tokens
     generated_tokens = generated_tokens[0].cpu().tolist()
-    return tokenizer.decode(generated_tokens, skip_special_tokens=True)
+    final_text = tokenizer.decode(generated_tokens, skip_special_tokens=True)
+    
+    if debug:
+        print("=" * 80)
+        print(f"🎯 FINAL RESULT: '{final_text}'")
+        print(f"📊 Total tokens generated: {len(generated_tokens) - len(tokens)}")
+        print("=" * 80)
+    
+    return final_text
 
 
 def load_saved_model(model_path, tokenizer):
@@ -350,6 +406,27 @@ def main():
     # Test with predefined prompts using all configurations
     print("\n🤖 Testing with predefined prompts (all sampling modes):")
     
+    # First, do a debug test with a specific prompt
+    debug_prompt = "What is artificial intelligence"
+    print(f"\n🔍 DEBUG TEST: Token-level analysis for '{debug_prompt}'")
+    print("=" * 60)
+    
+    debug_generated = generate_text(
+        model=model,
+        start_string=debug_prompt,
+        max_length=20,  # Shorter for detailed debugging
+        temperature=0.8,
+        repetition_penalty=1.1,
+        top_k=50,
+        top_p=0.9,
+        tokenizer=tokenizer,
+        debug=True  # Enable debug mode
+    )
+    
+    print(f"\n" + "="*60)
+    print("🤖 Regular Testing (all sampling modes):")
+    print("="*60)
+    
     for config_name, config in sampling_configs.items():
         print(f"\n{'='*40}")
         print(f"🎯 {config['name']}")
@@ -387,6 +464,7 @@ def main():
     print(f"\n🎯 Current mode: {current_settings['name']}")
     print(f"💡 Type 'mode <conservative|balanced|creative>' to change sampling mode")
     print(f"💡 Type 'settings' to see current configuration")
+    print(f"💡 Type 'debug <your prompt>' to see token-level generation details")
     
     while True:
         try:
@@ -397,6 +475,29 @@ def main():
                 
             if not user_input:
                 continue
+            
+            # Handle debug mode
+            if user_input.lower().startswith('debug '):
+                debug_prompt = user_input[6:].strip()  # Remove 'debug ' prefix
+                if debug_prompt:
+                    print(f"\n🔍 DEBUG MODE: Token-level analysis for '{debug_prompt}'")
+                    print("=" * 60)
+                    
+                    debug_generated = generate_text(
+                        model=model,
+                        start_string=debug_prompt,
+                        max_length=30,  # Reasonable length for debugging
+                        temperature=current_settings["temperature"],
+                        repetition_penalty=current_settings["repetition_penalty"],
+                        top_k=current_settings["top_k"],
+                        top_p=current_settings["top_p"],
+                        tokenizer=tokenizer,
+                        debug=True
+                    )
+                    continue
+                else:
+                    print("❌ Please provide a prompt after 'debug '. Example: debug What is AI?")
+                    continue
             
             # Handle mode switching
             if user_input.lower().startswith('mode '):
