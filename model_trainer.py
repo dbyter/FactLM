@@ -413,6 +413,8 @@ if __name__ == "__main__":
     print("\n🧠 Initializing model...")
     # Smaller, more efficient model configuration
     # NOTE: This configuration must match the defaults in generate_text.py for checkpoint compatibility
+    
+    # Option 1: Standard model (256-dim) - good for larger datasets
     model_config = {
         'vocab_size': tokenizer.vocab_size,
         'hidden_size': 256,      # Match d_model for efficiency
@@ -422,6 +424,18 @@ if __name__ == "__main__":
         'max_len': 5000,
         'num_heads': 8           # 8 heads gives 32-dim heads (256/8=32)
     }
+    
+    # Option 2: Smaller model (128-dim) - better for smaller datasets to prevent overfitting
+    # Uncomment the lines below to use a smaller model if you have limited training data
+    # model_config = {
+    #     'vocab_size': tokenizer.vocab_size,
+    #     'hidden_size': 128,      # Smaller for less overfitting
+    #     'num_layers': 4,         # Fewer layers
+    #     'dropout': 0.3,          # Higher dropout for regularization
+    #     'd_model': 128,          # Smaller embedding dimension
+    #     'max_len': 5000,
+    #     'num_heads': 4           # Fewer heads
+    # }
     
     # Validate model configuration
     assert model_config['d_model'] % model_config['num_heads'] == 0, \

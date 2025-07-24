@@ -60,7 +60,7 @@ def generate_text(model, start_string, max_length, temperature=0.8, tokenizer=No
     with torch.no_grad():
         for step in range(max_length):
             # Use only recent context to avoid memory issues
-            context_length = min(generated_tokens.size(1), 256)
+            context_length = min(generated_tokens.size(1), 512)  # Match training sequence length
             context = generated_tokens[:, -context_length:]
             
             outputs = model(context)
@@ -379,24 +379,24 @@ def main():
     sampling_configs = {
         "conservative": {
             "name": "Conservative (Best Quality)",
-            "temperature": 0.7,
-            "repetition_penalty": 1.15,
+            "temperature": 1.2,  # Much higher to break deterministic patterns
+            "repetition_penalty": 1.3,  # Slightly higher to prevent repetition
             "top_k": 40,
             "top_p": 0.85,
             "description": "Focused, high-quality, predictable outputs"
         },
         "balanced": {
             "name": "Balanced (Recommended)",
-            "temperature": 0.8,
-            "repetition_penalty": 1.1,
+            "temperature": 1.5,  # Much higher to break deterministic patterns
+            "repetition_penalty": 1.2,  # Higher to prevent repetition
             "top_k": 50,
             "top_p": 0.9,
             "description": "Good balance of quality and creativity"
         },
         "creative": {
             "name": "Creative (Experimental)",
-            "temperature": 1.0,
-            "repetition_penalty": 1.05,
+            "temperature": 2.0,  # Very high to break deterministic patterns
+            "repetition_penalty": 1.1,  # Higher to prevent repetition
             "top_k": 60,
             "top_p": 0.95,
             "description": "More diverse, creative, and experimental outputs"

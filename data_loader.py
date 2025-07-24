@@ -309,6 +309,12 @@ def process_generated_conversations(generated_data, tokenizer):
     all_tokens = []
     processed_conversations = 0
     
+    # Limit generated data to prevent overfitting
+    max_generated_conversations = min(len(generated_data), 5000)  # Limit to 5K conversations
+    if len(generated_data) > max_generated_conversations:
+        print(f"   Limiting generated data to {max_generated_conversations:,} conversations to prevent overfitting")
+        generated_data = generated_data[:max_generated_conversations]
+    
     for example in generated_data:
         try:
             # Generated data format: each example has a 'data' field with [prompt, response]
@@ -319,6 +325,19 @@ def process_generated_conversations(generated_data, tokenizer):
             
             # Format conversation - use raw text without Human/Assistant prefixes
             prompt, response = conversation[0], conversation[1]
+            
+            # Check for potential issues in the data
+            if len(prompt) < 10 or len(response) < 10:
+                continue  # Skip very short conversations
+            
+            # Check for repetitive patterns in the response
+            words = response.split()
+            if len(words) > 3:
+                # Check if response is just repeating the same word
+                unique_words = set(words)
+                if len(unique_words) / len(words) < 0.3:  # Too repetitive
+                    continue
+            
             conversation_text = f"{prompt}\n\n{response}\n\n"
             
             # Add conversation end marker
