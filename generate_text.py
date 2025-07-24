@@ -186,14 +186,44 @@ def load_saved_model(model_path, tokenizer):
         
         # Count number of layers by looking for encoder layer patterns
         num_layers = 0
+        layer_keys = []
         for key in model_state.keys():
-            if key.startswith('encoder_layers.') and key.endswith('.self_attn.query.weight'):
+            if key.startswith('encoder_layers.') and key.endswith('.self_attn.q.weight'):
+                layer_keys.append(key)
                 layer_num = int(key.split('.')[1])
                 num_layers = max(num_layers, layer_num + 1)
         
+        print(f"   Found layer keys: {layer_keys}")
+        print(f"   Detected {num_layers} layers")
+        
+        # Fallback if layer detection failed
+        if num_layers == 0:
+            print("   ⚠️  Layer detection failed, examining all keys...")
+            encoder_keys = [k for k in model_state.keys() if k.startswith('encoder_layers.')]
+            print(f"   All encoder keys: {encoder_keys[:10]}...")  # Show first 10
+            
+            # Try to extract from any encoder layer key
+            if encoder_keys:
+                # Get the highest layer number found
+                layer_numbers = []
+                for key in encoder_keys:
+                    try:
+                        layer_num = int(key.split('.')[1])
+                        layer_numbers.append(layer_num)
+                    except:
+                        continue
+                if layer_numbers:
+                    num_layers = max(layer_numbers) + 1
+                    print(f"   Fallback detected {num_layers} layers from key analysis")
+            
+            # Final fallback - use common default
+            if num_layers == 0:
+                num_layers = 8  # Common default
+                print(f"   Using fallback default: {num_layers} layers")
+        
         # Extract number of heads from attention weights
-        # query weight shape is [d_model, d_model], so num_heads = d_model / head_dim
-        if 'encoder_layers.0.self_attn.query.weight' in model_state:
+        # q weight shape is [d_model, d_model], so num_heads = d_model / head_dim
+        if 'encoder_layers.0.self_attn.q.weight' in model_state:
             # Assume standard head dimension (typically d_model // num_heads)
             # Common configurations: 8 heads for d_model=512, 12 heads for d_model=768
             if d_model == 512:
