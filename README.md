@@ -44,12 +44,14 @@ python model_trainer.py
 The script will automatically:
 - Find all `book*.txt` files in the data directory
 - Load and process UltraChat conversational data from Hugging Face
-- Clean and tokenize both text sources
+- Clean and tokenize both text sources using the `data_loader` module
 - Combine and shuffle the training data
 - Split into training/validation sets (80/20)
 - Train the model for the specified epochs
 - Save checkpoints every 5 epochs (configurable)
 - Save the trained model with comprehensive metadata
+
+The data loading is now handled by the dedicated `data_loader.py` module, making the training process more streamlined and the codebase more maintainable.
 
 ### Checkpoint Management
 
@@ -155,8 +157,9 @@ generated = generate_text(
 
 ```
 FactLM/
-├── factlm_model.py      # Model architecture
-├── model_trainer.py     # Training script with UltraChat integration
+├── factlm_model.py      # Model architecture (transformer implementation)
+├── model_trainer.py     # Training script with checkpoint management
+├── data_loader.py       # Data loading and processing module
 ├── generate_text.py     # Text generation script
 ├── data/
 │   ├── book1.txt       # Training text files
@@ -167,16 +170,48 @@ FactLM/
 └── README.md
 ```
 
+## Code Organization
+
+The codebase is organized into focused modules:
+
+- **`factlm_model.py`**: Core transformer architecture with multi-head attention
+- **`model_trainer.py`**: Pure training orchestration, checkpointing, and model saving (no text generation)
+- **`data_loader.py`**: Data loading, cleaning, tokenization, and preprocessing for all data sources
+- **`generate_text.py`**: Advanced text generation with sampling techniques and repetition prevention
+
+This modular design ensures clear separation of concerns: training logic is isolated from data processing and text generation, making the codebase easier to maintain, test, and extend.
+
 ## Training Process
 
-1. **Book Data Loading**: Automatically discovers and loads all `book*.txt` files
-2. **UltraChat Loading**: Downloads and samples conversations from Hugging Face
-3. **Text Processing**: Cleans formatting and converts conversations to training format
-4. **Data Combination**: Merges and shuffles both data sources
-5. **Tokenization**: Uses Hugging Face GPT-2 tokenizer for subword tokenization
-6. **Training**: Next-token prediction with cross-entropy loss
-7. **Validation**: Monitors validation loss with early stopping
-8. **Model Saving**: Saves model with comprehensive metadata including data sources
+1. **Data Loading Module**: `data_loader.py` handles all data processing
+   - Discovers and loads all `book*.txt` files automatically
+   - Downloads and samples conversations from UltraChat dataset
+   - Cleans Project Gutenberg formatting and converts conversations to training format
+2. **Data Combination**: Merges and shuffles both data sources for optimal training
+3. **Tokenization**: Uses Hugging Face GPT-2 tokenizer for consistent subword tokenization
+4. **Training**: Next-token prediction with cross-entropy loss and advanced optimization
+5. **Validation**: Monitors validation loss with early stopping and learning rate scheduling
+6. **Checkpointing**: Automatic checkpoint saving every 5 epochs with best model tracking
+7. **Model Saving**: Saves final model with comprehensive metadata including data sources
+
+### Using Data Loader Independently
+
+You can also use the data loading module independently for other projects:
+
+```python
+from data_loader import load_and_process_all_data
+
+# Load and process all data
+train_data, val_data, stats = load_and_process_all_data(
+    data_dir='data',
+    ultrachat_samples=25000,
+    train_split=0.8,
+    seed=42
+)
+
+print(f"Total tokens: {stats['total_tokens']:,}")
+print(f"Tokenizer: {stats['tokenizer']}")
+```
 
 ## Model Details
 

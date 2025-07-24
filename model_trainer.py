@@ -3,27 +3,29 @@
 FactLM Model Training Script
 
 This script trains a transformer-based language model on Project Gutenberg books 
-and UltraChat conversational data. All checkpoints and final models saved by this 
-script are compatible with generate_text.py for text generation.
+and UltraChat conversational data. The script is focused purely on training and 
+checkpointing - text generation is handled by generate_text.py.
 
-Checkpoint compatibility features:
-- Saves complete model_config in all checkpoints
-- Validates configuration consistency
-- Uses standardized architecture parameters
-- Compatible with both training resume and text generation
+Key features:
+- Multi-source data loading via data_loader.py module
+- Advanced training with AdamW optimizer and learning rate scheduling
+- Automatic checkpointing every 5 epochs with best model tracking
+- Early stopping with validation loss monitoring
+- Complete model and configuration saving for generate_text.py compatibility
+- GPU memory optimization and batch size auto-adjustment
+
+All checkpoints and final models saved by this script are compatible with 
+generate_text.py for text generation.
 """
 
 import torch
 import torch.nn as nn
 from torch.nn.utils import clip_grad_norm_
 from transformers import AutoTokenizer
-from datasets import load_dataset
 from factlm_model import FactLM
-import re
-import glob
+from data_loader import load_and_process_all_data
 import os
 import math
-import random
 from datetime import datetime
 
 def train_model(model, train_data, val_data, epochs, batch_size, sequence_length, learning_rate, device, max_grad_norm=1.0, checkpoint_every=5, save_checkpoints=True):
@@ -288,406 +290,6 @@ def train_model(model, train_data, val_data, epochs, batch_size, sequence_length
     return model, batch_size, sequence_length
 
 
-def generate_text(model, start_string, max_length, temperature=0.8, tokenizer=None, repetition_penalty=1.2, top_k=50, top_p=0.9):
-    """Generate text using the trained model with advanced sampling and anti-repetition"""
-    model.eval()
-    device = next(model.parameters()).device
-    
-    if tokenizer is None:
-        raise ValueError("Tokenizer is required for text generation")
-    
-    # Tokenize the start string
-    tokens = tokenizer.encode(start_string, add_special_tokens=True)
-    input_ids = torch.tensor(tokens, dtype=torch.long).unsqueeze(0).to(device)
-    generated_tokens = input_ids.clone()
-    
-    with torch.no_grad():
-        for step in range(max_length):
-            # Use only recent context to avoid memory issues
-            context_length = min(generated_tokens.size(1), 256)
-            context = generated_tokens[:, -context_length:]
-            
-            outputs = model(context)
-            logits = outputs[0, -1, :].clone()
-            
-            # Advanced repetition penalty - stronger for recent tokens
-            if repetition_penalty != 1.0:
-                generated_list = generated_tokens[0].tolist()
-                
-                # Apply different penalties based on recency
-                for i, token_id in enumerate(generated_list):
-                    # Distance from current position (recent tokens get higher penalty)
-                    distance = len(generated_list) - i
-                    
-                    if distance <= 5:  # Very recent tokens
-                        penalty = repetition_penalty * 1.5
-                    elif distance <= 15:  # Recent tokens
-                        penalty = repetition_penalty * 1.2
-                    else:  # Older tokens
-                        penalty = repetition_penalty
-                    
-                    logits[token_id] /= penalty
-            
-            # N-gram repetition penalty - prevent repeated phrases
-            if len(generated_tokens[0]) >= 6:
-                generated_list = generated_tokens[0].tolist()
-                
-                # Check for 2-gram, 3-gram, and 4-gram repetitions
-                for n in [2, 3, 4]:
-                    if len(generated_list) >= n:
-                        recent_ngram = tuple(generated_list[-n:])
-                        
-                        # Count occurrences of this n-gram in recent history
-                        search_length = min(50, len(generated_list) - n)
-                        count = 0
-                        for i in range(len(generated_list) - n - search_length, len(generated_list) - n):
-                            if i >= 0 and tuple(generated_list[i:i+n]) == recent_ngram:
-                                count += 1
-                        
-                        # Apply penalty to tokens that would complete repeated n-grams
-                        if count > 0:
-                            # Look ahead: what tokens would complete this n-gram pattern?
-                            for vocab_token_id in range(logits.size(0)):
-                                # Check if adding this token would create a repeated n-gram
-                                test_ngram = recent_ngram[1:] + (vocab_token_id,)
-                                test_count = 0
-                                for i in range(max(0, len(generated_list) - 50), len(generated_list) - n + 1):
-                                    if tuple(generated_list[i:i+n]) == test_ngram:
-                                        test_count += 1
-                                
-                                if test_count > 0:
-                                    # Apply escalating penalty based on how many times we've seen this
-                                    ngram_penalty = 1.5 + (0.5 * test_count)
-                                    logits[vocab_token_id] /= ngram_penalty
-            
-            # Apply temperature
-            logits = logits / temperature
-            
-            # Top-k filtering
-            if top_k > 0:
-                indices_to_remove = logits < torch.topk(logits, top_k)[0][..., -1, None]
-                logits[indices_to_remove] = float('-inf')
-            
-            # Top-p (nucleus) sampling
-            if top_p < 1.0:
-                sorted_logits, sorted_indices = torch.sort(logits, descending=True)
-                cumulative_probs = torch.cumsum(torch.softmax(sorted_logits, dim=-1), dim=-1)
-                
-                # Remove tokens with cumulative probability above the threshold
-                sorted_indices_to_remove = cumulative_probs > top_p
-                sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
-                sorted_indices_to_remove[..., 0] = 0
-                
-                indices_to_remove = sorted_indices_to_remove.scatter(0, sorted_indices, sorted_indices_to_remove)
-                logits[indices_to_remove] = float('-inf')
-            
-            # Sample next token
-            probs = torch.softmax(logits, dim=-1)
-            next_token = torch.multinomial(probs, 1)
-            
-            # Stop conditions
-            if next_token.item() == tokenizer.eos_token_id:
-                break
-            
-            # Enhanced repetition detection
-            if step > 8:
-                generated_list = generated_tokens[0].tolist()
-                
-                # Check for immediate token repetition (same token multiple times)
-                if len(generated_list) >= 3:
-                    last_3 = generated_list[-3:]
-                    if len(set(last_3)) == 1:  # Same token 3 times in a row
-                        break
-                
-                # Check for alternating pattern (A-B-A-B...)
-                if len(generated_list) >= 6:
-                    last_6 = generated_list[-6:]
-                    if (last_6[0] == last_6[2] == last_6[4] and 
-                        last_6[1] == last_6[3] == last_6[5] and 
-                        last_6[0] != last_6[1]):
-                        break
-                
-                # Check for low diversity in recent tokens
-                if step > 15:
-                    recent_window = generated_list[-15:]
-                    unique_ratio = len(set(recent_window)) / len(recent_window)
-                    if unique_ratio < 0.4:  # Less than 40% unique tokens
-                        break
-                
-                # Check for exact phrase repetition
-                if len(generated_list) >= 8:
-                    for phrase_len in [3, 4, 5]:
-                        if len(generated_list) >= phrase_len * 2:
-                            recent_phrase = generated_list[-phrase_len:]
-                            prev_phrase = generated_list[-phrase_len*2:-phrase_len]
-                            if recent_phrase == prev_phrase:
-                                break
-            
-            # Add token to sequence
-            generated_tokens = torch.cat([generated_tokens, next_token.unsqueeze(0)], dim=1)
-            
-            # Enhanced sentence ending detection
-            if step > 5:
-                # Get the actual token text to check for sentence endings
-                current_text = tokenizer.decode(generated_tokens[0], skip_special_tokens=True)
-                
-                # Check if we just completed a sentence
-                if any(current_text.rstrip().endswith(punct) for punct in ['.', '!', '?', ':"', "'"]):
-                    # Stop after sentence ending if we've generated enough
-                    if step > 20:
-                        break
-                    # Or if the sentence seems complete and long enough
-                    elif step > 10 and len(current_text.split()) >= 8:
-                        break
-    
-    # Decode the generated tokens
-    generated_tokens = generated_tokens[0].cpu().tolist()
-    return tokenizer.decode(generated_tokens, skip_special_tokens=True)
-
-
-def load_and_clean_book(file_path):
-    """Load and clean the Project Gutenberg book text"""
-    with open(file_path, 'r', encoding='utf-8') as f:
-        content = f.read()
-    
-    # Split by lines to find content boundaries
-    lines = content.split('\n')
-    
-    # Find where the actual book content starts (after "PREFACE" or similar)
-    start_idx = 0
-    for i, line in enumerate(lines):
-        if 'PREFACE' in line.upper() or 'CHAPTER' in line.upper():
-            start_idx = i
-            break
-    
-    # Find where the book content ends (before Project Gutenberg footer)
-    end_idx = len(lines)
-    for i in range(len(lines) - 1, -1, -1):
-        if 'gutenberg' in line.lower() or 'copyright' in line.lower():
-            end_idx = i
-            break
-    
-    # Extract the main content
-    book_lines = lines[start_idx:end_idx]
-    text = '\n'.join(book_lines)
-    
-    # Clean the text
-    # Remove excessive whitespace
-    text = re.sub(r'\n\s*\n', '\n\n', text)  # Multiple newlines to double newlines
-    text = re.sub(r'[ \t]+', ' ', text)      # Multiple spaces/tabs to single space
-    
-    # Remove page numbers and chapter headers that are isolated
-    text = re.sub(r'\n\s*\d+\s*\n', '\n', text)
-    text = re.sub(r'\n\s*CHAPTER [IVXLC\d]+\s*\n', '\n\n', text)
-    
-    # Remove leading/trailing whitespace
-    text = text.strip()
-    
-    return text
-
-
-def load_all_books(data_dir='data'):
-    """Load and combine all book*.txt files in the data directory"""
-    # Find all book files
-    book_pattern = os.path.join(data_dir, 'book*.txt')
-    book_files = glob.glob(book_pattern)
-    book_files.sort()  # Sort for consistent ordering
-    
-    if not book_files:
-        raise FileNotFoundError(f"No book*.txt files found in {data_dir} directory")
-    
-    print(f"Found {len(book_files)} book files:")
-    for file in book_files:
-        print(f"  - {file}")
-    
-    # Load and combine all books
-    combined_text = ""
-    for book_file in book_files:
-        print(f"Loading {book_file}...")
-        book_text = load_and_clean_book(book_file)
-        combined_text += book_text + "\n\n"  # Add separator between books
-        print(f"  - {len(book_text)} characters loaded")
-    
-    combined_text = combined_text.strip()
-    print(f"Total combined text: {len(combined_text)} characters")
-    
-    return combined_text, book_files
-
-
-def prepare_book_data(book_text, tokenizer, train_split=0.8):
-    """Tokenize book text and split into train/validation - improved to preserve more data"""
-    print(f"Processing {len(book_text)} characters of text...")
-    
-    # Split into chunks of reasonable size for tokenization (avoid memory issues)
-    chunk_size = 10000  # characters per chunk
-    all_tokens = []
-    
-    for i in range(0, len(book_text), chunk_size):
-        chunk = book_text[i:i + chunk_size]
-        
-        # Add overlap to avoid splitting words/sentences awkwardly
-        if i > 0 and i + chunk_size < len(book_text):
-            # Look back up to 200 chars for a good split point
-            overlap_start = max(0, i - 200)
-            overlap_text = book_text[overlap_start:i]
-            
-            # Find last sentence ending
-            last_period = max(overlap_text.rfind('.'), overlap_text.rfind('!'), overlap_text.rfind('?'))
-            if last_period > 0:
-                chunk = book_text[overlap_start + last_period + 1:i + chunk_size]
-        
-        # Tokenize chunk directly - no sentence splitting to preserve more data
-        tokens = tokenizer.encode(chunk, add_special_tokens=False)
-        all_tokens.extend(tokens)
-        
-        # Add EOS token between chunks to maintain document structure
-        if i + chunk_size < len(book_text):
-            all_tokens.append(tokenizer.eos_token_id)
-    
-    print(f"Processed text into {len(all_tokens)} tokens (much better!)")
-    
-    # Convert to tensor
-    full_data = torch.tensor(all_tokens, dtype=torch.long)
-    
-    # Split into train and validation
-    split_idx = int(len(full_data) * train_split)
-    train_data = full_data[:split_idx]
-    val_data = full_data[split_idx:]
-    
-    print(f"Train/validation split: {len(train_data)} / {len(val_data)} tokens ({train_split:.1%} / {1-train_split:.1%})")
-    
-    return train_data, val_data
-
-
-def load_ultrachat_data(dataset_name="stingning/ultrachat", num_samples=50000, seed=42):
-    """Load and sample UltraChat dataset from Hugging Face"""
-    print(f"Loading UltraChat dataset: {dataset_name}")
-    print(f"Sampling {num_samples:,} conversations (seed={seed})")
-    
-    try:
-        # Load the dataset
-        dataset = load_dataset(dataset_name)
-        print(f"Dataset loaded successfully!")
-        print(f"Available splits: {list(dataset.keys())}")
-        
-        # Use train split if available, otherwise use the first available split
-        if 'train' in dataset:
-            data_split = dataset['train']
-        else:
-            split_name = list(dataset.keys())[0]
-            data_split = dataset[split_name]
-            print(f"Using split: {split_name}")
-        
-        print(f"Total conversations in dataset: {len(data_split):,}")
-        
-        # Sample conversations if dataset is larger than requested
-        if len(data_split) > num_samples:
-            print(f"Sampling {num_samples:,} conversations from {len(data_split):,} total...")
-            # Set seed for reproducible sampling
-            random.seed(seed)
-            indices = random.sample(range(len(data_split)), num_samples)
-            sampled_data = data_split.select(indices)
-        else:
-            print(f"Using all {len(data_split):,} conversations")
-            sampled_data = data_split
-        
-        return sampled_data
-        
-    except Exception as e:
-        print(f"❌ Error loading UltraChat dataset: {e}")
-        print("   Make sure you have the datasets library installed: pip install datasets")
-        return None
-
-
-def process_ultrachat_conversations(ultrachat_data, tokenizer):
-    """Convert UltraChat conversations to training format"""
-    if ultrachat_data is None:
-        return []
-    
-    print(f"Processing {len(ultrachat_data):,} UltraChat conversations...")
-    
-    all_tokens = []
-    processed_conversations = 0
-    
-    for example in ultrachat_data:
-        try:
-            # UltraChat format: each example has a 'data' field with conversation list
-            conversation = example.get('data', [])
-            
-            if not conversation or len(conversation) < 2:
-                continue
-            
-            # Format conversation into a readable text format
-            conversation_text = ""
-            
-            for i, message in enumerate(conversation):
-                if i == 0:
-                    # First message is usually the human question
-                    conversation_text += f"Human: {message}\n\n"
-                elif i == 1:
-                    # Second message is usually the assistant response
-                    conversation_text += f"Assistant: {message}\n\n"
-                elif i % 2 == 0:
-                    # Even indices are human messages
-                    conversation_text += f"Human: {message}\n\n"
-                else:
-                    # Odd indices are assistant messages
-                    conversation_text += f"Assistant: {message}\n\n"
-            
-            # Add conversation end marker
-            conversation_text += "<|endofconversation|>\n\n"
-            
-            # Tokenize the conversation
-            tokens = tokenizer.encode(conversation_text, add_special_tokens=False)
-            all_tokens.extend(tokens)
-            
-            # Add EOS token between conversations
-            all_tokens.append(tokenizer.eos_token_id)
-            
-            processed_conversations += 1
-            
-            # Progress reporting
-            if processed_conversations % 5000 == 0:
-                print(f"  Processed {processed_conversations:,} conversations...")
-                
-        except Exception as e:
-            print(f"⚠️  Error processing conversation: {e}")
-            continue
-    
-    print(f"✅ Processed {processed_conversations:,} UltraChat conversations into {len(all_tokens):,} tokens")
-    
-    return all_tokens
-
-
-def combine_training_data(book_tokens, ultrachat_tokens, tokenizer, train_split=0.8):
-    """Combine book and UltraChat data into training/validation sets"""
-    print(f"\nCombining training data:")
-    print(f"  Book tokens: {len(book_tokens):,}")
-    print(f"  UltraChat tokens: {len(ultrachat_tokens):,}")
-    
-    # Combine all tokens
-    all_tokens = book_tokens + ultrachat_tokens
-    total_tokens = len(all_tokens)
-    
-    print(f"  Total combined tokens: {total_tokens:,}")
-    
-    # Shuffle the combined data for better training
-    random.shuffle(all_tokens)
-    print(f"  Data shuffled for better training distribution")
-    
-    # Convert to tensor
-    full_data = torch.tensor(all_tokens, dtype=torch.long)
-    
-    # Split into train and validation
-    split_idx = int(len(full_data) * train_split)
-    train_data = full_data[:split_idx]
-    val_data = full_data[split_idx:]
-    
-    print(f"  Train/validation split: {len(train_data):,} / {len(val_data):,} tokens ({train_split:.1%} / {1-train_split:.1%})")
-    
-    return train_data, val_data
-
-
 def save_model(model, tokenizer, model_config, training_stats, device_name):
     """Save the trained model with UTC timestamp and metadata"""
     # Create models directory if it doesn't exist
@@ -761,27 +363,6 @@ def save_model(model, tokenizer, model_config, training_stats, device_name):
     return model_path, metadata_path
 
 
-def load_saved_model(model_path, tokenizer):
-    """Load a previously saved model"""
-    checkpoint = torch.load(model_path, map_location='cpu')
-    
-    # Extract model configuration
-    model_config = checkpoint['model_config']
-    
-    # Initialize model with saved configuration
-    model = FactLM(**model_config)
-    
-    # Load the trained weights
-    model.load_state_dict(checkpoint['model_state_dict'])
-    
-    print(f"✅ Model loaded from: {model_path}")
-    print(f"   - Trained on: {checkpoint['timestamp_utc']}")
-    print(f"   - Device used: {checkpoint['device_used']}")
-    print(f"   - Vocabulary size: {checkpoint['vocab_size']:,}")
-    
-    return model, checkpoint
-
-
 # Example usage and data setup
 if __name__ == "__main__":
     print("🚀 FactLM Training with Books + UltraChat Data")
@@ -791,71 +372,17 @@ if __name__ == "__main__":
     print("💾 Checkpoints saved to: checkpoints/training_TIMESTAMP/")
     print("🔄 Resume training by modifying this script to load from checkpoint")
     
-    # Load books
-    print("\n📚 Loading and processing book data...")
-    book_text, book_files = load_all_books('data')
-    print(f"Sample book text: {book_text[:200]}...")
-    
-    # Create Hugging Face tokenizer (using GPT-2 tokenizer)
-    print("\n🔤 Loading tokenizer...")
-    tokenizer = AutoTokenizer.from_pretrained("gpt2")
-    
-    # Add padding token if it doesn't exist
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
-    
-    print(f"Vocabulary size: {tokenizer.vocab_size}")
-    print(f"Special tokens: PAD={tokenizer.pad_token_id}, EOS={tokenizer.eos_token_id}")
-    
-    # Process book data into tokens (but don't split yet)
-    print("\n📖 Tokenizing book data...")
-    book_tokens = []
-    chunk_size = 10000  # characters per chunk
-    
-    for i in range(0, len(book_text), chunk_size):
-        chunk = book_text[i:i + chunk_size]
-        
-        # Add overlap to avoid splitting words/sentences awkwardly
-        if i > 0 and i + chunk_size < len(book_text):
-            overlap_start = max(0, i - 200)
-            overlap_text = book_text[overlap_start:i]
-            
-            # Find last sentence ending
-            last_period = max(overlap_text.rfind('.'), overlap_text.rfind('!'), overlap_text.rfind('?'))
-            if last_period > 0:
-                chunk = book_text[overlap_start + last_period + 1:i + chunk_size]
-        
-        # Tokenize chunk
-        tokens = tokenizer.encode(chunk, add_special_tokens=False)
-        book_tokens.extend(tokens)
-        
-        # Add EOS token between chunks
-        if i + chunk_size < len(book_text):
-            book_tokens.append(tokenizer.eos_token_id)
-    
-    print(f"Book data: {len(book_tokens):,} tokens")
-    
-    # Load UltraChat data
-    print("\n💬 Loading UltraChat dataset...")
-    ultrachat_data = load_ultrachat_data(
-        dataset_name="stingning/ultrachat",
-        num_samples=50000,  # Increased from 25,000 for more diverse training data
+    # Load and process all data using the data_loader module
+    training_data, validation_data, data_stats = load_and_process_all_data(
+        data_dir='data',
+        ultrachat_samples=50000,  # 50K UltraChat conversations
+        train_split=0.8,
         seed=42
     )
     
-    # Process UltraChat conversations
-    ultrachat_tokens = []
-    if ultrachat_data is not None:
-        print("\n🔄 Processing UltraChat conversations...")
-        ultrachat_tokens = process_ultrachat_conversations(ultrachat_data, tokenizer)
-    else:
-        print("⚠️  Skipping UltraChat data due to loading error")
-    
-    # Combine all training data
-    print("\n🔗 Combining training data...")
-    training_data, validation_data = combine_training_data(
-        book_tokens, ultrachat_tokens, tokenizer, train_split=0.8
-    )
+    # Extract data statistics for training metadata
+    tokenizer = data_stats['tokenizer']
+    book_files = data_stats['book_files']
     
     print(f"\n📊 Final dataset statistics:")
     print(f"Training data shape: {training_data.shape}")
@@ -918,9 +445,9 @@ if __name__ == "__main__":
         print("Using CPU as fallback")
     
     epochs = 25           # Slightly reduced due to larger model and more data
-    batch_size = 16       # Reduced from 32 due to much larger model (4x memory usage)
+    batch_size = 32       # Doubled batch size for better GPU utilization (was 16)
     sequence_length = 256  # Keep reasonable sequence length
-    learning_rate = 0.00015 # Reduced from 0.0002 for larger model stability
+    learning_rate = 0.0002 # Slightly increased LR for larger batch size (was 0.00015)
     max_grad_norm = 1.0   # Gradient clipping
     checkpoint_every = 5  # Save checkpoint every 5 epochs
     
@@ -928,6 +455,7 @@ if __name__ == "__main__":
     print(f"Device: {device} ({device_name})")
     print(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
     print(f"Batch configuration: {batch_size} sequences × {sequence_length} tokens = {batch_size * sequence_length:,} tokens per batch")
+    print(f"🚀 OPTIMIZED: 2x larger batches for speed ({batch_size * sequence_length:,} vs 4,096 tokens)")
     print(f"Checkpoint frequency: Every {checkpoint_every} epochs")
     print(f"🔥 Large model: d_model={model_config['d_model']}, layers={model_config['num_layers']}, heads={model_config['num_heads']}")
     
@@ -945,6 +473,8 @@ if __name__ == "__main__":
         print(f"   Estimated total model memory: ~{estimated_memory_mb * 2}MB (including gradients)")
     elif estimated_memory_mb > 8000:  # More than 8GB per batch
         print("⚠️  High memory usage detected! Monitor GPU memory during training")
+    else:
+        print(f"✅ Memory usage looks reasonable: ~{estimated_memory_mb}MB per batch")
     
     # Train the model
     print("\n🎯 Starting training...")
@@ -959,10 +489,10 @@ if __name__ == "__main__":
         'train_tokens': len(training_data),
         'val_tokens': len(validation_data),
         'total_params': sum(p.numel() for p in model.parameters()),
-        'book_files': book_files,
-        'book_tokens': len(book_tokens),
-        'ultrachat_tokens': len(ultrachat_tokens),
-        'ultrachat_conversations': len(ultrachat_data) if ultrachat_data else 0
+        'book_files': data_stats['book_files'],
+        'book_tokens': data_stats['book_tokens'],
+        'ultrachat_tokens': data_stats['ultrachat_tokens'],
+        'ultrachat_conversations': data_stats['ultrachat_conversations']
     }
     
     trained_model, final_batch_size, final_sequence_length = train_model(
