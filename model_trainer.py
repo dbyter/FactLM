@@ -396,12 +396,12 @@ if __name__ == "__main__":
     # NOTE: This configuration must match the defaults in generate_text.py for checkpoint compatibility
     model_config = {
         'vocab_size': tokenizer.vocab_size,
-        'hidden_size': 1024,     # Increased from 256 (4x larger)
+        'hidden_size': 512,      # Reduced to match d_model
         'num_layers': 12,        # Increased from 8 (50% more layers)
         'dropout': 0.15,         # Slightly reduced for larger model
-        'd_model': 1024,         # Increased from 512 (2x larger)
+        'd_model': 512,          # Reduced from 1024 for faster training
         'max_len': 5000,
-        'num_heads': 8           # Reduced from 16, gives 128-dim heads (1024/8=128)
+        'num_heads': 8           # 8 heads gives 64-dim heads (512/8=64)
     }
     
     # Validate model configuration

@@ -24,19 +24,19 @@ def get_default_model_config(vocab_size, d_model=None):
     """
     if d_model is None:
         # Auto-detect based on vocab_size (though this is just a fallback)
-        d_model = 1024  # Default to large model
+        d_model = 512  # Default to large model
     
     # Match the exact configuration from model_trainer.py
-    if d_model >= 1024:
+    if d_model >= 512:
         # Large model configuration (current default in model_trainer.py)
         return {
             'vocab_size': vocab_size,
-            'hidden_size': 1024,     # From model_trainer.py
+            'hidden_size': 512,      # From model_trainer.py
             'num_layers': 12,        # From model_trainer.py  
             'dropout': 0.15,         # From model_trainer.py
-            'd_model': 1024,         # From model_trainer.py
+            'd_model': 512,          # From model_trainer.py
             'max_len': 5000,
-            'num_heads': 8           # From model_trainer.py (reduced from 16)
+            'num_heads': 8           # From model_trainer.py (8 heads = 64-dim each)
         }
     elif d_model >= 512:
         # Medium model configuration
@@ -337,14 +337,14 @@ def load_saved_model(model_path, tokenizer):
         # q weight shape is [d_model, d_model], so num_heads = d_model / head_dim
         if 'encoder_layers.0.self_attn.q.weight' in model_state:
             # Determine num_heads based on d_model to match model_trainer.py defaults
-            if d_model == 1024:
-                num_heads = 8   # New large model: 1024/8 = 128-dim heads
-            elif d_model == 512:
-                num_heads = 8   # Previous model: 512/8 = 64-dim heads
+            if d_model == 512:
+                num_heads = 8   # Current large model: 512/8 = 64-dim heads
             elif d_model == 768:
                 num_heads = 12  # Standard transformer: 768/12 = 64-dim heads
             elif d_model == 256:
                 num_heads = 8   # Small model: 256/8 = 32-dim heads
+            elif d_model == 1024:
+                num_heads = 8   # Very large model (legacy): 1024/8 = 128-dim heads
             else:
                 num_heads = max(1, d_model // 64)  # Default to 64-dim heads
         else:
@@ -357,8 +357,8 @@ def load_saved_model(model_path, tokenizer):
             # Verify this is d_model * 4 as expected
             if ff_hidden_size == d_model * 4:
                 # hidden_size parameter in FactLM config - match model_trainer.py defaults
-                if d_model >= 1024:
-                    hidden_size = 1024  # Large model from model_trainer.py
+                if d_model >= 512:
+                    hidden_size = 512   # Large model from model_trainer.py
                 else:
                     hidden_size = d_model  # Smaller models use d_model
             else:
@@ -366,13 +366,13 @@ def load_saved_model(model_path, tokenizer):
                 hidden_size = d_model
         else:
             # Match model_trainer.py defaults based on model size
-            if d_model >= 1024:
-                hidden_size = 1024  # Large model configuration
+            if d_model >= 512:
+                hidden_size = 512   # Large model configuration
             else:
                 hidden_size = d_model  # Default for smaller models
         
         # Set dropout to match model_trainer.py defaults
-        if d_model >= 1024:
+        if d_model >= 512:
             dropout = 0.15  # Large model dropout from model_trainer.py
         else:
             dropout = 0.2   # Previous model dropout

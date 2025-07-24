@@ -236,15 +236,12 @@ def combine_training_data(book_tokens, ultrachat_tokens, tokenizer, train_split=
     print(f"  Book tokens: {len(book_tokens):,}")
     print(f"  UltraChat tokens: {len(ultrachat_tokens):,}")
     
-    # Combine all tokens
+    # Combine all tokens - preserving sequence structure
     all_tokens = book_tokens + ultrachat_tokens
     total_tokens = len(all_tokens)
     
     print(f"  Total combined tokens: {total_tokens:,}")
-    
-    # Shuffle the combined data for better training
-    random.shuffle(all_tokens)
-    print(f"  Data shuffled for better training distribution")
+    print(f"  ✅ Preserving text sequence structure (no token shuffling)")
     
     # Convert to tensor
     full_data = torch.tensor(all_tokens, dtype=torch.long)
