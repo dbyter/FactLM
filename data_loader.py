@@ -66,6 +66,7 @@ def load_all_books(data_dir='data'):
     book_files = glob.glob(book_pattern)
     book_files.sort()  # Sort for consistent ordering
     
+    
     if not book_files:
         raise FileNotFoundError(f"No book*.txt files found in {data_dir} directory")
     
@@ -405,7 +406,7 @@ def tokenize_text_data(text_data, tokenizer):
 
 
 def load_and_process_all_data(data_dir='data', 
-                             ultrachat_samples=50000, 
+                             ultrachat_samples=25000,  # Updated default to 25K
                              generated_data_file="temp_generated_training_data.json",  # Changed to temp file
                              train_split=0.8, 
                              seed=42):
@@ -424,7 +425,7 @@ def load_and_process_all_data(data_dir='data',
     """
     from transformers import AutoTokenizer
     
-    print("🔄 Starting data loading pipeline (BOOKS + GENERATED DATA)...")
+    print("🔄 Starting data loading pipeline (BOOKS + ULTRACHAT + GENERATED)...")
     
     # Load tokenizer
     print("\n🔤 Loading tokenizer...")
@@ -440,10 +441,21 @@ def load_and_process_all_data(data_dir='data',
     print("\n📖 Tokenizing book data...")
     book_tokens = tokenize_text_data(book_text, tokenizer)
     
-    # Set empty UltraChat data for testing (keeping this commented out)
-    print("\n💬 Skipping UltraChat data (commented out for testing)")
+    # Load UltraChat data
+    print("\n💬 Loading UltraChat dataset...")
+    ultrachat_data = load_ultrachat_data(
+        dataset_name="stingning/ultrachat",
+        num_samples=25000,  # Sample 25K conversations as requested
+        seed=seed
+    )
+    
+    # Process UltraChat conversations
     ultrachat_tokens = []
-    ultrachat_data = None
+    if ultrachat_data is not None:
+        print("\n🔄 Processing UltraChat conversations...")
+        ultrachat_tokens = process_ultrachat_conversations(ultrachat_data, tokenizer)
+    else:
+        print("⚠️  Skipping UltraChat data due to loading error")
     
     # Load and process generated training data
     print(f"\n🤖 Loading generated training data from {generated_data_file}...")
@@ -457,8 +469,8 @@ def load_and_process_all_data(data_dir='data',
         print("⚠️  No generated training data found - this will result in empty dataset!")
         print(f"     Make sure {generated_data_file} exists")
     
-    # Combine all training data (books + generated data active)
-    print("\n🔗 Combining training data (BOOKS + GENERATED)...")
+    # Combine all training data (books + UltraChat + generated data active)
+    print("\n🔗 Combining training data (BOOKS + ULTRACHAT + GENERATED)...")
     train_data, val_data = combine_all_training_data(
         book_tokens, ultrachat_tokens, generated_tokens, tokenizer, train_split=train_split
     )
@@ -481,15 +493,16 @@ def load_and_process_all_data(data_dir='data',
     print(f"\n✅ Data loading complete!")
     print(f"   📊 Total tokens: {data_stats['total_tokens']:,}")
     print(f"   📚 Book tokens: {data_stats['book_tokens']:,} (ACTIVE)")
-    print(f"   💬 UltraChat tokens: {data_stats['ultrachat_tokens']:,} (DISABLED)")
+    print(f"   💬 UltraChat tokens: {data_stats['ultrachat_tokens']:,} (ACTIVE)")
     print(f"   🤖 Generated tokens: {data_stats['generated_tokens']:,} (ACTIVE)")
     print(f"   🔄 Train/Val split: {len(train_data):,} / {len(val_data):,}")
     
     # Show data source proportions
     if data_stats['total_tokens'] > 0:
         book_pct = (data_stats['book_tokens'] / data_stats['total_tokens']) * 100
+        ultrachat_pct = (data_stats['ultrachat_tokens'] / data_stats['total_tokens']) * 100
         gen_pct = (data_stats['generated_tokens'] / data_stats['total_tokens']) * 100
-        print(f"   📊 Data mix: {book_pct:.1f}% books, {gen_pct:.1f}% generated")
+        print(f"   📊 Data mix: {book_pct:.1f}% books, {ultrachat_pct:.1f}% UltraChat, {gen_pct:.1f}% generated")
     
     if data_stats['generated_tokens'] == 0:
         print(f"\n⚠️  WARNING: No generated tokens found!")
