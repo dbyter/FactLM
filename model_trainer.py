@@ -1,13 +1,15 @@
-# Requirements: pip install torch transformers
+# Requirements: pip install torch transformers datasets
 import torch
 import torch.nn as nn
 from torch.nn.utils import clip_grad_norm_
 from transformers import AutoTokenizer
+from datasets import load_dataset
 from factlm_model import FactLM
 import re
 import glob
 import os
 import math
+import random
 from datetime import datetime
 
 def train_model(model, train_data, val_data, epochs, batch_size, sequence_length, learning_rate, device, max_grad_norm=1.0):
@@ -426,6 +428,135 @@ def prepare_book_data(book_text, tokenizer, train_split=0.8):
     return train_data, val_data
 
 
+def load_ultrachat_data(dataset_name="stingning/ultrachat", num_samples=50000, seed=42):
+    """Load and sample UltraChat dataset from Hugging Face"""
+    print(f"Loading UltraChat dataset: {dataset_name}")
+    print(f"Sampling {num_samples:,} conversations (seed={seed})")
+    
+    try:
+        # Load the dataset
+        dataset = load_dataset(dataset_name)
+        print(f"Dataset loaded successfully!")
+        print(f"Available splits: {list(dataset.keys())}")
+        
+        # Use train split if available, otherwise use the first available split
+        if 'train' in dataset:
+            data_split = dataset['train']
+        else:
+            split_name = list(dataset.keys())[0]
+            data_split = dataset[split_name]
+            print(f"Using split: {split_name}")
+        
+        print(f"Total conversations in dataset: {len(data_split):,}")
+        
+        # Sample conversations if dataset is larger than requested
+        if len(data_split) > num_samples:
+            print(f"Sampling {num_samples:,} conversations from {len(data_split):,} total...")
+            # Set seed for reproducible sampling
+            random.seed(seed)
+            indices = random.sample(range(len(data_split)), num_samples)
+            sampled_data = data_split.select(indices)
+        else:
+            print(f"Using all {len(data_split):,} conversations")
+            sampled_data = data_split
+        
+        return sampled_data
+        
+    except Exception as e:
+        print(f"❌ Error loading UltraChat dataset: {e}")
+        print("   Make sure you have the datasets library installed: pip install datasets")
+        return None
+
+
+def process_ultrachat_conversations(ultrachat_data, tokenizer):
+    """Convert UltraChat conversations to training format"""
+    if ultrachat_data is None:
+        return []
+    
+    print(f"Processing {len(ultrachat_data):,} UltraChat conversations...")
+    
+    all_tokens = []
+    processed_conversations = 0
+    
+    for example in ultrachat_data:
+        try:
+            # UltraChat format: each example has a 'data' field with conversation list
+            conversation = example.get('data', [])
+            
+            if not conversation or len(conversation) < 2:
+                continue
+            
+            # Format conversation into a readable text format
+            conversation_text = ""
+            
+            for i, message in enumerate(conversation):
+                if i == 0:
+                    # First message is usually the human question
+                    conversation_text += f"Human: {message}\n\n"
+                elif i == 1:
+                    # Second message is usually the assistant response
+                    conversation_text += f"Assistant: {message}\n\n"
+                elif i % 2 == 0:
+                    # Even indices are human messages
+                    conversation_text += f"Human: {message}\n\n"
+                else:
+                    # Odd indices are assistant messages
+                    conversation_text += f"Assistant: {message}\n\n"
+            
+            # Add conversation end marker
+            conversation_text += "<|endofconversation|>\n\n"
+            
+            # Tokenize the conversation
+            tokens = tokenizer.encode(conversation_text, add_special_tokens=False)
+            all_tokens.extend(tokens)
+            
+            # Add EOS token between conversations
+            all_tokens.append(tokenizer.eos_token_id)
+            
+            processed_conversations += 1
+            
+            # Progress reporting
+            if processed_conversations % 5000 == 0:
+                print(f"  Processed {processed_conversations:,} conversations...")
+                
+        except Exception as e:
+            print(f"⚠️  Error processing conversation: {e}")
+            continue
+    
+    print(f"✅ Processed {processed_conversations:,} UltraChat conversations into {len(all_tokens):,} tokens")
+    
+    return all_tokens
+
+
+def combine_training_data(book_tokens, ultrachat_tokens, tokenizer, train_split=0.8):
+    """Combine book and UltraChat data into training/validation sets"""
+    print(f"\nCombining training data:")
+    print(f"  Book tokens: {len(book_tokens):,}")
+    print(f"  UltraChat tokens: {len(ultrachat_tokens):,}")
+    
+    # Combine all tokens
+    all_tokens = book_tokens + ultrachat_tokens
+    total_tokens = len(all_tokens)
+    
+    print(f"  Total combined tokens: {total_tokens:,}")
+    
+    # Shuffle the combined data for better training
+    random.shuffle(all_tokens)
+    print(f"  Data shuffled for better training distribution")
+    
+    # Convert to tensor
+    full_data = torch.tensor(all_tokens, dtype=torch.long)
+    
+    # Split into train and validation
+    split_idx = int(len(full_data) * train_split)
+    train_data = full_data[:split_idx]
+    val_data = full_data[split_idx:]
+    
+    print(f"  Train/validation split: {len(train_data):,} / {len(val_data):,} tokens ({train_split:.1%} / {1-train_split:.1%})")
+    
+    return train_data, val_data
+
+
 def save_model(model, tokenizer, model_config, training_stats, device_name):
     """Save the trained model with UTC timestamp and metadata"""
     # Create models directory if it doesn't exist
@@ -484,6 +615,14 @@ def save_model(model, tokenizer, model_config, training_stats, device_name):
             f.write(f"Training Data:\n")
             for book_file in training_stats['book_files']:
                 f.write(f"- {book_file}\n")
+            
+            if 'ultrachat_tokens' in training_stats and training_stats['ultrachat_tokens'] > 0:
+                f.write(f"\nUltraChat Data:\n")
+                f.write(f"- Dataset: stingning/ultrachat\n")
+                f.write(f"- Conversations: {training_stats.get('ultrachat_conversations', 0):,}\n")
+                f.write(f"- Tokens: {training_stats['ultrachat_tokens']:,}\n")
+                f.write(f"- Book tokens: {training_stats.get('book_tokens', 0):,}\n")
+                f.write(f"- Total tokens ratio: {training_stats['ultrachat_tokens'] / (training_stats.get('book_tokens', 1) + training_stats['ultrachat_tokens']):.1%} UltraChat, {training_stats.get('book_tokens', 0) / (training_stats.get('book_tokens', 1) + training_stats['ultrachat_tokens']):.1%} Books\n")
     
     print(f"✅ Model saved: {model_path}")
     print(f"✅ Metadata saved: {metadata_path}")
@@ -514,14 +653,16 @@ def load_saved_model(model_path, tokenizer):
 
 # Example usage and data setup
 if __name__ == "__main__":
-    print("Loading and processing book data...")
+    print("🚀 FactLM Training with Books + UltraChat Data")
+    print("=" * 60)
     
-    # Load all books
+    # Load books
+    print("\n📚 Loading and processing book data...")
     book_text, book_files = load_all_books('data')
-    print(f"Sample text: {book_text[:200]}...")
+    print(f"Sample book text: {book_text[:200]}...")
     
     # Create Hugging Face tokenizer (using GPT-2 tokenizer)
-    print("Loading tokenizer...")
+    print("\n🔤 Loading tokenizer...")
     tokenizer = AutoTokenizer.from_pretrained("gpt2")
     
     # Add padding token if it doesn't exist
@@ -531,26 +672,73 @@ if __name__ == "__main__":
     print(f"Vocabulary size: {tokenizer.vocab_size}")
     print(f"Special tokens: PAD={tokenizer.pad_token_id}, EOS={tokenizer.eos_token_id}")
     
-    # Prepare training data
-    print("Tokenizing book data...")
-    training_data, validation_data = prepare_book_data(book_text, tokenizer)
+    # Process book data into tokens (but don't split yet)
+    print("\n📖 Tokenizing book data...")
+    book_tokens = []
+    chunk_size = 10000  # characters per chunk
     
+    for i in range(0, len(book_text), chunk_size):
+        chunk = book_text[i:i + chunk_size]
+        
+        # Add overlap to avoid splitting words/sentences awkwardly
+        if i > 0 and i + chunk_size < len(book_text):
+            overlap_start = max(0, i - 200)
+            overlap_text = book_text[overlap_start:i]
+            
+            # Find last sentence ending
+            last_period = max(overlap_text.rfind('.'), overlap_text.rfind('!'), overlap_text.rfind('?'))
+            if last_period > 0:
+                chunk = book_text[overlap_start + last_period + 1:i + chunk_size]
+        
+        # Tokenize chunk
+        tokens = tokenizer.encode(chunk, add_special_tokens=False)
+        book_tokens.extend(tokens)
+        
+        # Add EOS token between chunks
+        if i + chunk_size < len(book_text):
+            book_tokens.append(tokenizer.eos_token_id)
+    
+    print(f"Book data: {len(book_tokens):,} tokens")
+    
+    # Load UltraChat data
+    print("\n💬 Loading UltraChat dataset...")
+    ultrachat_data = load_ultrachat_data(
+        dataset_name="stingning/ultrachat",
+        num_samples=25000,  # Adjust this number based on your needs and resources
+        seed=42
+    )
+    
+    # Process UltraChat conversations
+    ultrachat_tokens = []
+    if ultrachat_data is not None:
+        print("\n🔄 Processing UltraChat conversations...")
+        ultrachat_tokens = process_ultrachat_conversations(ultrachat_data, tokenizer)
+    else:
+        print("⚠️  Skipping UltraChat data due to loading error")
+    
+    # Combine all training data
+    print("\n🔗 Combining training data...")
+    training_data, validation_data = combine_training_data(
+        book_tokens, ultrachat_tokens, tokenizer, train_split=0.8
+    )
+    
+    print(f"\n📊 Final dataset statistics:")
     print(f"Training data shape: {training_data.shape}")
     print(f"Validation data shape: {validation_data.shape}")
     print(f"Sample tokens: {training_data[:20].tolist()}")
     print(f"Sample decoded: {tokenizer.decode(training_data[:50])}")
     
     # Initialize model
-    print("Initializing model...")
-    # Much smaller model for the dataset size
+    print("\n🧠 Initializing model...")
+    # Adjust model size based on larger combined dataset
     model_config = {
         'vocab_size': tokenizer.vocab_size,
-        'hidden_size': 128,
-        'num_layers': 6,  # More layers, smaller width
-        'dropout': 0.3,  # Higher dropout for regularization
-        'd_model': 256,  # Much smaller
+        'hidden_size': 256,      # Increased from 128
+        'num_layers': 8,         # Increased from 6
+        'dropout': 0.2,          # Reduced from 0.3 for larger dataset
+        'd_model': 512,          # Increased from 256
         'max_len': 5000,
-        'num_heads': 8   # 256 / 8 = 32 head dimension
+        'num_heads': 8           # 512 / 8 = 64 head dimension
     }
     
     model = FactLM(**model_config)
@@ -586,15 +774,16 @@ if __name__ == "__main__":
         device_name = "CPU"
         print("Using CPU as fallback")
     
-    epochs = 50  # More epochs for better convergence
-    batch_size = 64   # Moderate batch size for better generalization
-    sequence_length = 256  # Reasonable sequence length
-    learning_rate = 0.0003  # Lower, more conservative learning rate
-    max_grad_norm = 1.0  # Tighter gradient clipping
+    epochs = 30           # Reduced epochs since we have more data
+    batch_size = 32       # Reduced batch size due to larger model
+    sequence_length = 256  # Keep reasonable sequence length
+    learning_rate = 0.0002 # Lower learning rate for stability
+    max_grad_norm = 1.0   # Gradient clipping
     
-    print(f"Using device: {device} ({device_name})")
+    print(f"\n⚙️  Training configuration:")
+    print(f"Device: {device} ({device_name})")
     print(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
-    print(f"Initial batch configuration: {batch_size} sequences × {sequence_length} tokens = {batch_size * sequence_length:,} tokens per batch")
+    print(f"Batch configuration: {batch_size} sequences × {sequence_length} tokens = {batch_size * sequence_length:,} tokens per batch")
     
     # Check if configuration is reasonable for dataset size
     total_tokens_needed = batch_size * sequence_length
@@ -609,7 +798,7 @@ if __name__ == "__main__":
         print("⚠️  High memory usage detected! If you get OOM errors, reduce batch_size or sequence_length")
     
     # Train the model
-    print("Starting training...")
+    print("\n🎯 Starting training...")
     
     # Collect training statistics
     training_stats = {
@@ -621,7 +810,10 @@ if __name__ == "__main__":
         'train_tokens': len(training_data),
         'val_tokens': len(validation_data),
         'total_params': sum(p.numel() for p in model.parameters()),
-        'book_files': book_files
+        'book_files': book_files,
+        'book_tokens': len(book_tokens),
+        'ultrachat_tokens': len(ultrachat_tokens),
+        'ultrachat_conversations': len(ultrachat_data) if ultrachat_data else 0
     }
     
     trained_model, final_batch_size, final_sequence_length = train_model(
@@ -641,7 +833,7 @@ if __name__ == "__main__":
     training_stats['sequence_length'] = final_sequence_length
     
     # Save the trained model
-    print("\nSaving trained model...")
+    print("\n💾 Saving trained model...")
     model_path, metadata_path = save_model(
         model=trained_model,
         tokenizer=tokenizer,
