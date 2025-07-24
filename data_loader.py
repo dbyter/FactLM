@@ -280,9 +280,9 @@ def process_generated_conversations(generated_data, tokenizer):
             if not conversation or len(conversation) != 2:
                 continue
             
-            # Format conversation into a readable text format
+            # Format conversation - use raw text without Human/Assistant prefixes
             prompt, response = conversation[0], conversation[1]
-            conversation_text = f"Human: {prompt}\n\nAssistant: {response}\n\n"
+            conversation_text = f"{prompt}\n\n{response}\n\n"
             
             # Add conversation end marker
             conversation_text += "<|endofconversation|>\n\n"

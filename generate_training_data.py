@@ -12,7 +12,7 @@ import random
 from typing import List, Dict, Any
 import os
 from datetime import datetime
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError
 import threading
 
 
@@ -195,24 +195,28 @@ class PromptGenerator:
 class TrainingDataGenerator:
     """Main class for generating training data using GPT-4o-mini"""
     
-    def __init__(self, api_key: str = None, max_concurrent_requests: int = 50):
-        """Initialize with OpenAI API key and concurrency settings"""
+    def __init__(self, api_key: str = None, max_concurrent_requests: int = 50, request_timeout: float = 30.0):
+        """Initialize with OpenAI API key, concurrency settings, and timeout"""
         self.client = openai.OpenAI(api_key=api_key or os.getenv('OPENAI_API_KEY'))
         self.prompt_generator = PromptGenerator()
         self.max_concurrent_requests = max_concurrent_requests
+        self.request_timeout = request_timeout
         self.request_lock = threading.Lock()
         self.request_count = 0
         self.successful_count = 0
         self.failed_count = 0
     
     def get_single_response(self, prompt: str, prompt_index: int) -> Dict[str, Any]:
-        """Get response from GPT-4o-mini for a single prompt"""
-        try:
-            with self.request_lock:
-                self.request_count += 1
-                current_request = self.request_count
-            
-            print(f"  🔄 Request {current_request}: {prompt[:50]}...")
+        """Get response from GPT-4o-mini for a single prompt with function-level timeout"""
+        
+        # Pre-assign request number for consistent error reporting
+        with self.request_lock:
+            self.request_count += 1
+            current_request_num = self.request_count
+        
+        def _make_api_call():
+            """Internal function to make the actual API call"""            
+            print(f"  🔄 Request {current_request_num}: {prompt[:50]}...")
             
             response = self.client.chat.completions.create(
                 model="gpt-4o-mini",
@@ -222,6 +226,7 @@ class TrainingDataGenerator:
                 ],
                 max_tokens=500,
                 temperature=0.7
+                # Removed unreliable OpenAI timeout parameter
             )
             
             answer = response.choices[0].message.content
@@ -238,14 +243,26 @@ class TrainingDataGenerator:
                 "request_index": prompt_index
             }
             
-            print(f"  ✅ Request {current_request}: Success ({len(answer)} chars)")
+            print(f"  ✅ Request {current_request_num}: Success ({len(answer)} chars)")
             return result
-            
+        
+        # Use ThreadPoolExecutor to implement reliable function-level timeout
+        try:
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(_make_api_call)
+                result = future.result(timeout=self.request_timeout)
+                return result
+                
         except Exception as e:
             with self.request_lock:
                 self.failed_count += 1
             
-            print(f"  ❌ Request {current_request}: Error - {e}")
+            # Check if it's a timeout error for better error reporting
+            error_msg = str(e)
+            if "timeout" in error_msg.lower() or "timed out" in error_msg.lower() or isinstance(e, TimeoutError):
+                print(f"  ⏰ Request {current_request_num}: Function timeout after {self.request_timeout} seconds")
+            else:
+                print(f"  ❌ Request {current_request_num}: Error - {e}")
             
             return {
                 "prompt": prompt,
@@ -421,17 +438,20 @@ def main():
     # Configuration
     TOTAL_PROMPTS = 10000
     BATCH_SIZE = 100
-    MAX_CONCURRENT = 50  # Adjust based on your API rate limits
+    MAX_CONCURRENT = 100  # Adjust based on your API rate limits
+    REQUEST_TIMEOUT = 30.0  # 30-second timeout for each request
     OUTPUT_FILE = "generated_training_data.json"
     
     print(f"🔧 Configuration:")
     print(f"   API Key: {'✅ Set' if api_key else '❌ Missing'}")
     print(f"   Concurrent requests: {MAX_CONCURRENT}")
+    print(f"   Request timeout: {REQUEST_TIMEOUT} seconds")
     
-    # Create generator with concurrency settings
+    # Create generator with concurrency and timeout settings
     generator = TrainingDataGenerator(
         api_key=api_key,
-        max_concurrent_requests=MAX_CONCURRENT
+        max_concurrent_requests=MAX_CONCURRENT,
+        request_timeout=REQUEST_TIMEOUT
     )
     
     # Run generation
