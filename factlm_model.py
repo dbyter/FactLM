@@ -104,15 +104,18 @@ class FactLM(nn.Module):
         self.num_heads = num_heads
         
         self.embedding = nn.Embedding(vocab_size, d_model)
+        self.embed_dropout = nn.Dropout(dropout)
+
         self.pos_encoder = PositionalEncoding(d_model, max_len)
         self.encoder_layers = nn.ModuleList([EncoderLayer(d_model, num_heads, dropout) for _ in range(num_layers)])
         self.fc = nn.Linear(d_model, vocab_size)
+        self.fc.weight = self.embedding.weight  # weight tying
 
     def init_hidden(self, batch_size):
         return torch.zeros(self.num_layers, batch_size, self.hidden_size)
         
     def forward(self, x):
-        x = self.embedding(x)
+        x = self.embed_dropout(self.embedding(x))
         x = self.pos_encoder(x)
         for layer in self.encoder_layers:
             x = layer(x)
