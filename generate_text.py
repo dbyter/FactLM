@@ -448,7 +448,7 @@ def main():
     
     # Single balanced configuration for all generation
     generation_config = {
-        "temperature": 0.8, 
+        "temperature": 0.2,  # More deterministic, focused generation
         "repetition_penalty": 1.5, 
         "top_k": 40, 
         "top_p": 0.9
