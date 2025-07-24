@@ -56,92 +56,13 @@ def generate_text(model, start_string, max_length, temperature=0.8, tokenizer=No
             outputs = model(context)
             logits = outputs[0, -1, :].clone()
             
-            # Advanced repetition penalty - much more aggressive
+            # Simple repetition penalty
             if repetition_penalty != 1.0:
                 generated_list = generated_tokens[0].tolist()
                 
-                # Apply very strong penalties for immediate repetitions
-                for i, token_id in enumerate(generated_list):
-                    # Distance from current position (recent tokens get higher penalty)
-                    distance = len(generated_list) - i
-                    
-                    if distance <= 2:  # Last 2 tokens - prevent immediate repetition
-                        penalty = repetition_penalty * 3.0  # Very strong penalty
-                    elif distance <= 5:  # Very recent tokens
-                        penalty = repetition_penalty * 2.0
-                    elif distance <= 10:  # Recent tokens
-                        penalty = repetition_penalty * 1.5
-                    elif distance <= 20:  # Moderately recent tokens
-                        penalty = repetition_penalty * 1.2
-                    else:  # Older tokens
-                        penalty = repetition_penalty
-                    
-                    logits[token_id] /= penalty
-            
-            # Enhanced N-gram repetition penalty - prevent repeated phrases
-            if len(generated_tokens[0]) >= 4:
-                generated_list = generated_tokens[0].tolist()
-                
-                # Check for immediate token repetition (strongest penalty)
-                if len(generated_list) >= 1:
-                    last_token = generated_list[-1]
-                    logits[last_token] /= 5.0  # Very strong penalty for same token
-                
-                # Check for 2-gram, 3-gram, and 4-gram repetitions
-                for n in [2, 3, 4, 5]:
-                    if len(generated_list) >= n:
-                        recent_ngram = tuple(generated_list[-n:])
-                        
-                        # Count ALL occurrences of this n-gram in the entire sequence
-                        ngram_count = 0
-                        for i in range(len(generated_list) - n + 1):
-                            if tuple(generated_list[i:i+n]) == recent_ngram:
-                                ngram_count += 1
-                        
-                        # Apply exponentially increasing penalties
-                        if ngram_count > 1:  # If we've seen this n-gram before
-                            # Look ahead: what tokens would complete this n-gram pattern?
-                            for vocab_token_id in range(min(logits.size(0), 10000)):  # Limit for performance
-                                # Check if adding this token would repeat the n-gram
-                                test_ngram = recent_ngram[1:] + (vocab_token_id,)
-                                
-                                # Count how many times this new n-gram would appear
-                                test_count = 0
-                                for i in range(len(generated_list) - n + 1):
-                                    if tuple(generated_list[i:i+n]) == test_ngram:
-                                        test_count += 1
-                                
-                                if test_count > 0:
-                                    # Exponential penalty based on n-gram size and frequency
-                                    base_penalty = 2.0 + (n * 0.5)  # Larger n-grams get stronger penalties
-                                    frequency_penalty = 1.0 + (test_count * 0.8)
-                                    total_penalty = base_penalty * frequency_penalty
-                                    logits[vocab_token_id] /= total_penalty
-            
-            # Additional anti-repetition: penalize tokens that create boring patterns
-            if len(generated_tokens[0]) >= 6:
-                generated_list = generated_tokens[0].tolist()
-                
-                # Check for alternating patterns (A-B-A-B...)
-                if len(generated_list) >= 4:
-                    # Look for A-B-A pattern and heavily penalize B
-                    if (len(generated_list) >= 3 and 
-                        generated_list[-3] == generated_list[-1]):
-                        alternating_token = generated_list[-2]
-                        logits[alternating_token] /= 4.0
-                
-                # Penalize tokens that appear too frequently in recent window
-                recent_window_size = min(20, len(generated_list))
-                recent_window = generated_list[-recent_window_size:]
-                token_counts = {}
-                for token in recent_window:
-                    token_counts[token] = token_counts.get(token, 0) + 1
-                
-                # Apply frequency-based penalties
-                for token_id, count in token_counts.items():
-                    if count > 1:
-                        frequency_penalty = 1.5 + (count * 0.3)
-                        logits[token_id] /= frequency_penalty
+                # Apply standard repetition penalty to previously generated tokens
+                for token_id in set(generated_list):
+                    logits[token_id] /= repetition_penalty
             
             # Apply temperature
             logits = logits / temperature
@@ -177,91 +98,28 @@ def generate_text(model, start_string, max_length, temperature=0.8, tokenizer=No
                 generated_list = generated_tokens[0].tolist()
                 current_text = tokenizer.decode(generated_tokens[0], skip_special_tokens=True)
                 
-                # Check for immediate token repetition (same token 2+ times in a row)
-                if len(generated_list) >= 2:
-                    if generated_list[-1] == generated_list[-2]:
+                # Check for immediate token repetition (same token 3+ times in a row)
+                if len(generated_list) >= 3:
+                    if generated_list[-1] == generated_list[-2] == generated_list[-3]:
                         print(f"   Stopping: Immediate token repetition detected")
                         break
                 
-                # Check for word salad - too many uncommon tokens in sequence
-                if step > 5:
-                    recent_tokens = generated_list[-5:]
-                    decoded_recent = tokenizer.decode(recent_tokens, skip_special_tokens=True)
-                    words = decoded_recent.split()
-                    
-                    # If we have multiple words that are very long or technical, likely word salad
-                    long_technical_words = [w for w in words if len(w) > 8 and not any(c.isdigit() for c in w)]
-                    if len(long_technical_words) >= 3:
-                        print(f"   Stopping: Technical word salad detected")
-                        break
-                
-                # Check for simple alternating pattern (A-B-A-B...)
-                if len(generated_list) >= 4:
-                    last_4 = generated_list[-4:]
-                    if (last_4[0] == last_4[2] and last_4[1] == last_4[3] and 
-                        last_4[0] != last_4[1]):
-                        print(f"   Stopping: Alternating pattern detected")
-                        break
-                
-                # Check for 3-token cycles (A-B-C-A-B-C...)
-                if len(generated_list) >= 6:
-                    last_6 = generated_list[-6:]
-                    if (last_6[0] == last_6[3] and last_6[1] == last_6[4] and 
-                        last_6[2] == last_6[5]):
-                        print(f"   Stopping: 3-token cycle detected")
-                        break
-                
-                # Check for exact phrase repetition (more aggressive)
-                if len(generated_list) >= 4:
-                    for phrase_len in [2, 3]:
-                        if len(generated_list) >= phrase_len * 2:
-                            recent_phrase = generated_list[-phrase_len:]
-                            prev_phrase = generated_list[-phrase_len*2:-phrase_len]
-                            if recent_phrase == prev_phrase:
-                                print(f"   Stopping: {phrase_len}-token phrase repetition detected")
-                                break
-                
-                # Check for low diversity in recent tokens (very aggressive)
-                if step > 4:
-                    recent_window_size = min(6, len(generated_list))
-                    recent_window = generated_list[-recent_window_size:]
-                    unique_ratio = len(set(recent_window)) / len(recent_window)
-                    if unique_ratio < 0.7:  # Very high threshold for short sequences
-                        print(f"   Stopping: Low diversity ({unique_ratio:.2f}) in recent tokens")
-                        break
-                
-                # Stop on natural sentence endings much more aggressively
-                if step > 3:
+                # Stop on natural sentence endings (more permissive)
+                if step > 10:
                     if any(current_text.rstrip().endswith(punct) for punct in ['.', '!', '?']):
                         print(f"   Stopping: Natural sentence ending detected")
                         break
-                
-                # Stop if the text seems to be degrading into nonsense
-                if step > 8:
-                    words = current_text.lower().split()
-                    if len(words) >= 4:
-                        # Check if recent words are getting very long (likely nonsense)
-                        recent_words = words[-3:]
-                        avg_word_length = sum(len(w) for w in recent_words) / len(recent_words)
-                        if avg_word_length > 12:  # Very long average word length
-                            print(f"   Stopping: Text degrading into long nonsense words")
-                            break
             
             # Add token to sequence
             generated_tokens = torch.cat([generated_tokens, next_token.unsqueeze(0)], dim=1)
             
-            # Enhanced sentence ending detection
-            if step > 5:
-                # Get the actual token text to check for sentence endings
+            # Simple sentence ending detection (less aggressive)
+            if step > 20:  # Only after generating substantial text
                 current_text = tokenizer.decode(generated_tokens[0], skip_special_tokens=True)
                 
-                # Check if we just completed a sentence
-                if any(current_text.rstrip().endswith(punct) for punct in ['.', '!', '?', ':"', "'"]):
-                    # Stop after sentence ending if we've generated enough
-                    if step > 20:
-                        break
-                    # Or if the sentence seems complete and long enough
-                    elif step > 10 and len(current_text.split()) >= 8:
+                # Check if we just completed a sentence and have enough content
+                if any(current_text.rstrip().endswith(punct) for punct in ['.', '!', '?']):
+                    if len(current_text.split()) >= 10:  # At least 10 words
                         break
     
     # Decode the generated tokens
@@ -465,25 +323,25 @@ def main():
     sampling_configs = {
         "conservative": {
             "name": "Conservative (Best Quality)",
-            "temperature": 0.4,
-            "repetition_penalty": 2.5,
-            "top_k": 15,
-            "top_p": 0.75,
+            "temperature": 0.7,
+            "repetition_penalty": 1.15,
+            "top_k": 40,
+            "top_p": 0.85,
             "description": "Focused, high-quality, predictable outputs"
         },
         "balanced": {
             "name": "Balanced (Recommended)",
-            "temperature": 0.6,
-            "repetition_penalty": 2.2,
-            "top_k": 25,
-            "top_p": 0.85,
+            "temperature": 0.8,
+            "repetition_penalty": 1.1,
+            "top_k": 50,
+            "top_p": 0.9,
             "description": "Good balance of quality and creativity"
         },
         "creative": {
             "name": "Creative (Experimental)",
-            "temperature": 0.9,
-            "repetition_penalty": 1.8,
-            "top_k": 40,
+            "temperature": 1.0,
+            "repetition_penalty": 1.05,
+            "top_k": 60,
             "top_p": 0.95,
             "description": "More diverse, creative, and experimental outputs"
         }
@@ -505,7 +363,7 @@ def main():
             generated = generate_text(
                 model=model,
                 start_string=prompt,
-                max_length=25,
+                max_length=50,  # Increased from 25 to allow more complete thoughts
                 temperature=config["temperature"],
                 repetition_penalty=config["repetition_penalty"],
                 top_k=config["top_k"],
@@ -570,7 +428,7 @@ def main():
             generated = generate_text(
                 model=model,
                 start_string=user_input,
-                max_length=35,
+                max_length=60,  # Increased from 35 to allow more complete responses
                 temperature=current_settings["temperature"],
                 repetition_penalty=current_settings["repetition_penalty"],
                 top_k=current_settings["top_k"],
