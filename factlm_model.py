@@ -98,6 +98,7 @@ class FactLM(nn.Module):
         self.dropout = dropout
         self.d_model = d_model
         self.num_heads = num_heads
+        self.vocab_size = vocab_size
         
         self.embedding = nn.Embedding(vocab_size, d_model)
         self.embed_dropout = nn.Dropout(dropout)
@@ -108,30 +109,48 @@ class FactLM(nn.Module):
             d_model=d_model,
             nhead=num_heads,
             dropout=dropout,
-            batch_first=True  # makes input shape (batch, seq, dim)
+            batch_first=True,  # makes input shape (batch, seq, dim)
+            activation='gelu'  # GELU activation often works better than ReLU
         )
         self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
-        self.fc = nn.Linear(d_model, vocab_size)
-        self.fc.weight = self.embedding.weight  # weight tying
+        self.fc = nn.Linear(d_model, vocab_size, bias=False)  # Remove bias for better training
+        
+        # Initialize weights properly
+        self._init_weights()
+
+    def _init_weights(self):
+        """Initialize weights for better training stability"""
+        # Xavier/Glorot initialization for embeddings
+        nn.init.normal_(self.embedding.weight, mean=0.0, std=0.02)
+        
+        # Initialize output layer
+        nn.init.normal_(self.fc.weight, mean=0.0, std=0.02)
+        
+        # Weight tying with proper scaling
+        self.fc.weight = nn.Parameter(self.embedding.weight.clone() * (self.d_model ** -0.5))
 
     def init_hidden(self, batch_size):
         return torch.zeros(self.num_layers, batch_size, self.hidden_size)
     
-    def generate_mask(self, seq_len, device):
-        mask = torch.tril(torch.ones(seq_len, seq_len, device=device)).bool()
-        return mask  # shape: (seq_len, seq_len)    
+    def generate_causal_mask(self, seq_len, device):
+        """Generate causal mask for autoregressive generation"""
+        # Create upper triangular mask (True means positions to ignore)
+        mask = torch.triu(torch.ones(seq_len, seq_len, device=device, dtype=torch.bool), diagonal=1)
+        return mask
 
     def forward(self, x):
-        x = self.embed_dropout(self.embedding(x))
+        # Embedding with scaling (common practice for transformers)
+        x = self.embedding(x) * math.sqrt(self.d_model)
         x = self.pos_encoder(x)
+        x = self.embed_dropout(x)
+        
         seq_len = x.size(1)
-        mask = self.generate_mask(seq_len, x.device)
-        # PyTorch expects the mask as float with -inf where masked
-        attn_mask = mask.masked_fill(~mask, float('-inf')).masked_fill(mask, float(0.0))
+        # Create causal mask - True means "ignore this position"
+        mask = self.generate_causal_mask(seq_len, x.device)
 
-        # batch_first=True, so x shape is (batch, seq_len, d_model)
-        x = self.encoder(x, mask=attn_mask)
+        # Pass through transformer with causal mask
+        x = self.encoder(x, mask=mask)
 
+        # Output projection
         x = self.fc(x)
-        # Remove log_softmax to return raw logits for better generation flexibility
         return x

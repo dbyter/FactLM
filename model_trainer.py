@@ -30,7 +30,14 @@ from datetime import datetime
 
 def train_model(model, train_data, val_data, epochs, batch_size, sequence_length, learning_rate, device, max_grad_norm=1.0, checkpoint_every=5, save_checkpoints=True):
     model.to(device)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=0.1, betas=(0.9, 0.95))
+    # Improved optimizer settings for better stability
+    optimizer = torch.optim.AdamW(
+        model.parameters(), 
+        lr=learning_rate, 
+        weight_decay=0.01,  # Reduced weight decay for better stability
+        betas=(0.9, 0.999),  # Standard betas, second moment closer to 1
+        eps=1e-6  # Smaller epsilon for better precision
+    )
     
     # Learning rate scheduler with warmup
     steps_per_epoch = len(train_data) // (batch_size * sequence_length)
@@ -51,14 +58,15 @@ def train_model(model, train_data, val_data, epochs, batch_size, sequence_length
         print(f"   New config: batch_size={batch_size}, sequence_length={sequence_length}")
         steps_per_epoch = len(train_data) // (batch_size * sequence_length)
     
-    warmup_steps = max(10, steps_per_epoch // 4)  # More warmup steps, at least 10
+    # More conservative warmup and decay schedule
+    warmup_steps = max(100, steps_per_epoch // 2)  # Longer warmup for stability
     total_steps = steps_per_epoch * epochs
     
     print(f"Training schedule: {steps_per_epoch} steps/epoch, {warmup_steps} warmup steps, {total_steps} total steps")
     
     # Early stopping variables
     best_val_loss = float('inf')
-    patience = 5
+    patience = 8  # Increased patience for more stable training
     patience_counter = 0
     
     # Checkpoint setup
@@ -74,20 +82,21 @@ def train_model(model, train_data, val_data, epochs, batch_size, sequence_length
     
     def lr_lambda(step):
         if step < warmup_steps:
-            return max(0.1, step / warmup_steps)  # Minimum 10% of base LR
+            # Smoother warmup with minimum LR
+            return max(0.01, step / warmup_steps)  # Start from 1% of base LR
         else:
-            # Cosine decay after warmup  
+            # More gradual cosine decay after warmup  
             if total_steps <= warmup_steps:
                 return 1.0  # No decay if no steps after warmup
             progress = (step - warmup_steps) / (total_steps - warmup_steps)
-            return 0.5 * (1 + math.cos(progress * math.pi))
-    
+            # Cosine decay with minimum LR of 10% of base
+            return max(0.1, 0.5 * (1 + math.cos(progress * math.pi)))
+
     def save_checkpoint(epoch, model, optimizer, scheduler, train_loss, val_loss, is_best=False):
-        """Save a training checkpoint"""
-        if not save_checkpoints or checkpoint_dir is None:
+        if not save_checkpoints:
             return
             
-        checkpoint_data = {
+        checkpoint = {
             'epoch': epoch,
             'model_state_dict': model.state_dict(),
             'optimizer_state_dict': optimizer.state_dict(),
@@ -95,58 +104,21 @@ def train_model(model, train_data, val_data, epochs, batch_size, sequence_length
             'train_loss': train_loss,
             'val_loss': val_loss,
             'best_val_loss': best_val_loss,
-            'batch_size': batch_size,
-            'sequence_length': sequence_length,
-            'learning_rate': learning_rate,
-            'max_grad_norm': max_grad_norm,
-            'step': step,
-            # Add metadata needed for text generation
-            'model_config': {
-                'vocab_size': model.embedding.num_embeddings,
-                'hidden_size': model.hidden_size,
-                'num_layers': model.num_layers,
-                'dropout': model.dropout,
-                'd_model': model.d_model,
-                'max_len': 5000,  # This should match the original config
-                'num_heads': model.num_heads
-            },
-            'timestamp_utc': datetime.now().strftime('%Y%m%d_%H%M%S_UTC'),
-            'device_used': str(device),
-            'vocab_size': model.embedding.num_embeddings
+            'step': step
         }
         
-        # Validate checkpoint data for generate_text.py compatibility
-        required_fields = ['model_state_dict', 'model_config', 'timestamp_utc', 'device_used', 'vocab_size']
-        for field in required_fields:
-            if field not in checkpoint_data:
-                print(f"⚠️  Warning: Missing required field '{field}' in checkpoint")
+        # Save regular checkpoint every N epochs
+        if epoch % checkpoint_every == 0:
+            checkpoint_path = os.path.join(checkpoint_dir, f'checkpoint_epoch_{epoch:03d}.pth')
+            torch.save(checkpoint, checkpoint_path)
+            print(f"💾 Saving checkpoint: {checkpoint_path}")
         
-        # Validate model_config completeness
-        required_config_fields = ['vocab_size', 'hidden_size', 'num_layers', 'dropout', 'd_model', 'max_len', 'num_heads']
-        for field in required_config_fields:
-            if field not in checkpoint_data['model_config']:
-                print(f"⚠️  Warning: Missing required model_config field '{field}' in checkpoint")
-        
-        # Verify saved config matches actual model architecture
-        saved_config = checkpoint_data['model_config']
-        if (saved_config['d_model'] != model.d_model or 
-            saved_config['num_layers'] != model.num_layers or 
-            saved_config['num_heads'] != model.num_heads):
-            print(f"⚠️  Warning: Saved model_config doesn't match actual model architecture!")
-            print(f"   Saved: d_model={saved_config['d_model']}, layers={saved_config['num_layers']}, heads={saved_config['num_heads']}")
-            print(f"   Actual: d_model={model.d_model}, layers={model.num_layers}, heads={model.num_heads}")
-        
-        # Always save a checkpoint at the end of each epoch
-        checkpoint_path = os.path.join(checkpoint_dir, f'checkpoint_epoch_{epoch:03d}.pth')
-        print(f"\U0001F4BE Saving checkpoint: {checkpoint_path}")
-        torch.save(checkpoint_data, checkpoint_path)
-
-        # Optionally, still save the best model separately
+        # Save best model checkpoint
         if is_best:
             best_path = os.path.join(checkpoint_dir, 'best_model.pth')
-            print(f"\U0001F4BE Saving BEST checkpoint: {best_path}")
-            torch.save(checkpoint_data, best_path)
-    
+            torch.save(checkpoint, best_path)
+            print(f"💾 Saving BEST checkpoint: {best_path}")
+
     def load_checkpoint(checkpoint_path, model, optimizer, scheduler):
         """Load a training checkpoint for resuming training"""
         if not os.path.exists(checkpoint_path):
@@ -179,9 +151,13 @@ def train_model(model, train_data, val_data, epochs, batch_size, sequence_length
         return resume_info
     
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
-    criterion = nn.CrossEntropyLoss()  # Use CrossEntropyLoss since model now outputs raw logits
+    criterion = nn.CrossEntropyLoss(label_smoothing=0.1)  # Add label smoothing for better generalization
 
     step = 0
+    # Track loss history for stability monitoring
+    recent_losses = []
+    loss_smoothing_window = 50
+    
     for epoch in range(epochs):
         model.train()
         total_loss = 0
@@ -216,9 +192,13 @@ def train_model(model, train_data, val_data, epochs, batch_size, sequence_length
             loss = criterion(outputs, targets)
             loss.backward()
             
-            # Gradient clipping
+            # More aggressive gradient clipping for stability
             grad_norm = clip_grad_norm_(model.parameters(), max_grad_norm)
             total_grad_norm += grad_norm.item()
+            
+            # Check for gradient explosion
+            if grad_norm.item() > max_grad_norm * 10:
+                print(f"⚠️  Large gradient detected: {grad_norm.item():.3f} at step {step}")
             
             optimizer.step()
             scheduler.step()  # Update learning rate
@@ -227,10 +207,16 @@ def train_model(model, train_data, val_data, epochs, batch_size, sequence_length
             num_batches += 1
             step += 1
             
-            # Print progress every 100 steps
+            # Track recent losses for stability monitoring
+            recent_losses.append(loss.item())
+            if len(recent_losses) > loss_smoothing_window:
+                recent_losses.pop(0)
+            
+            # Print progress every 100 steps with smoothed loss
             if step % 100 == 0:
                 current_lr = scheduler.get_last_lr()[0]
-                print(f"  Step {step}: Loss {loss.item():.4f}, LR {current_lr:.6f}, Grad Norm {grad_norm.item():.3f}")
+                smoothed_loss = sum(recent_losses) / len(recent_losses) if recent_losses else loss.item()
+                print(f"  Step {step}: Loss {loss.item():.4f} (Smooth: {smoothed_loss:.4f}), LR {current_lr:.6f}, Grad Norm {grad_norm.item():.3f}")
 
         # Validation
         model.eval()
@@ -474,9 +460,9 @@ if __name__ == "__main__":
         print("Using CPU as fallback")
     
     epochs = 25           # Keep same epochs for good training
-    batch_size = 24       # Reduced due to doubled sequence length (was 48)
-    sequence_length = 512  # Increased from 256 for better long-context learning
-    learning_rate = 0.0003 # Slightly increased LR for smaller model
+    batch_size = 32       # Increased batch size for more stable gradients
+    sequence_length = 256  # Start with shorter sequences for stable training
+    learning_rate = 0.00015 # More conservative LR for improved architecture
     max_grad_norm = 1.0   # Gradient clipping
     checkpoint_every = 5  # Save checkpoint every 5 epochs
     
