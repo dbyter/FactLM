@@ -629,9 +629,9 @@ def print_wikipedia_samples(wikipedia_data, max_samples=10):
 
 
 def load_and_process_all_data(data_dir='data', 
-                             ultrachat_samples=75000,  # Updated default to 75K
+                             ultrachat_samples=0,  # Updated default to 0 (disabled)
                              wikipedia_samples=200000,  # Updated default to 200K
-                             generated_data_file="temp_generated_training_data.json",  # Changed to temp file
+                             generated_data_file=None,  # Updated default to None (disabled)
                              train_split=0.8, 
                              seed=42):
     """
@@ -639,9 +639,9 @@ def load_and_process_all_data(data_dir='data',
     
     Args:
         data_dir (str): Directory containing book*.txt files
-        ultrachat_samples (int): Number of UltraChat conversations to sample (default: 75K)
+        ultrachat_samples (int): Number of UltraChat conversations to sample (default: 0 - disabled)
         wikipedia_samples (int): Number of Wikipedia articles to sample (default: 200K)
-        generated_data_file (str): Path to generated training data JSON file
+        generated_data_file (str): Path to generated training data JSON file (default: None - disabled)
         train_split (float): Fraction of data to use for training (rest for validation)
         seed (int): Random seed for reproducible sampling
     
@@ -650,7 +650,8 @@ def load_and_process_all_data(data_dir='data',
     """
     from transformers import AutoTokenizer
     
-    print("🔄 Starting data loading pipeline (BOOKS + ULTRACHAT + GENERATED + WIKIPEDIA)...")
+    print("🔄 Starting data loading pipeline (BOOKS + WIKIPEDIA)...")
+    print("   📚 UltraChat and Generated data disabled for focused factual training")
     
     # Load tokenizer
     print("\n🔤 Loading tokenizer...")
@@ -670,40 +671,47 @@ def load_and_process_all_data(data_dir='data',
     book_tokens = tokenize_text_data(book_text, tokenizer)
     
     # Load UltraChat data
-    print("\n💬 Loading UltraChat dataset...")
-    ultrachat_data = load_ultrachat_data(
-        dataset_name="stingning/ultrachat",
-        num_samples=ultrachat_samples,  # Use the parameter value (now 75K)
-        seed=seed
-    )
-    
-    # Print UltraChat samples (if loaded successfully)
-    if ultrachat_data is not None:
-        print_conversation_samples("UltraChat", ultrachat_data, max_samples=10)
-    
-    # Process UltraChat conversations
     ultrachat_tokens = []
-    if ultrachat_data is not None:
-        print("\n🔄 Processing UltraChat conversations...")
-        ultrachat_tokens = process_ultrachat_conversations(ultrachat_data, tokenizer)
+    if ultrachat_samples > 0:
+        print("\n💬 Loading UltraChat dataset...")
+        ultrachat_data = load_ultrachat_data(
+            dataset_name="stingning/ultrachat",
+            num_samples=ultrachat_samples,  # Use the parameter value (now 75K)
+            seed=seed
+        )
+        
+        # Print UltraChat samples (if loaded successfully)
+        if ultrachat_data is not None:
+            print_conversation_samples("UltraChat", ultrachat_data, max_samples=10)
+        
+        # Process UltraChat conversations
+        if ultrachat_data is not None:
+            print("\n🔄 Processing UltraChat conversations...")
+            ultrachat_tokens = process_ultrachat_conversations(ultrachat_data, tokenizer)
+        else:
+            print("⚠️  Skipping UltraChat data due to loading error")
     else:
-        print("⚠️  Skipping UltraChat data due to loading error")
+        print("\n💬 Skipping UltraChat data (ultrachat_samples=0)")
+        ultrachat_data = None
     
     # Load and process generated training data
-    print(f"\n🤖 Loading generated training data from {generated_data_file}...")
-    generated_data = load_generated_training_data(generated_data_file)
-    
-    # Print generated conversation samples (if loaded successfully)
-    if generated_data is not None:
-        print_conversation_samples("Generated", generated_data, max_samples=10)
-    
     generated_tokens = []
-    if generated_data is not None:
-        print("\n🔄 Processing generated conversations...")
-        generated_tokens = process_generated_conversations(generated_data, tokenizer)
+    if generated_data_file is not None:
+        print(f"\n🤖 Loading generated training data from {generated_data_file}...")
+        generated_data = load_generated_training_data(generated_data_file)
+        
+        # Print generated conversation samples (if loaded successfully)
+        if generated_data is not None:
+            print_conversation_samples("Generated", generated_data, max_samples=10)
+        
+        if generated_data is not None:
+            print("\n🔄 Processing generated conversations...")
+            generated_tokens = process_generated_conversations(generated_data, tokenizer)
+        else:
+            print("⚠️  No generated training data found - continuing without it")
     else:
-        print("⚠️  No generated training data found - this will result in empty dataset!")
-        print(f"     Make sure {generated_data_file} exists")
+        print("\n🤖 Skipping generated data (generated_data_file=None)")
+        generated_data = None
     
     # Load Wikipedia data
     print("\n📚 Loading Wikipedia dataset...")
@@ -726,8 +734,8 @@ def load_and_process_all_data(data_dir='data',
     else:
         print("⚠️  Skipping Wikipedia data due to loading error")
     
-    # Combine all training data (books + UltraChat + generated data active)
-    print("\n🔗 Combining training data (BOOKS + ULTRACHAT + GENERATED + Wikipedia)...")
+    # Combine all training data (books + Wikipedia only)
+    print("\n🔗 Combining training data (BOOKS + WIKIPEDIA)...")
     train_data, val_data = combine_all_training_data(
         book_tokens, ultrachat_tokens, generated_tokens, wikipedia_tokens, tokenizer, train_split=train_split
     )
@@ -752,8 +760,14 @@ def load_and_process_all_data(data_dir='data',
     print(f"\n✅ Data loading complete!")
     print(f"   📊 Total tokens: {data_stats['total_tokens']:,}")
     print(f"   📚 Book tokens: {data_stats['book_tokens']:,} (ACTIVE)")
-    print(f"   💬 UltraChat tokens: {data_stats['ultrachat_tokens']:,} (ACTIVE)")
-    print(f"   🤖 Generated tokens: {data_stats['generated_tokens']:,} (ACTIVE)")
+    if data_stats['ultrachat_tokens'] > 0:
+        print(f"   💬 UltraChat tokens: {data_stats['ultrachat_tokens']:,} (ACTIVE)")
+    else:
+        print(f"   💬 UltraChat tokens: 0 (SKIPPED)")
+    if data_stats['generated_tokens'] > 0:
+        print(f"   🤖 Generated tokens: {data_stats['generated_tokens']:,} (ACTIVE)")
+    else:
+        print(f"   🤖 Generated tokens: 0 (SKIPPED)")
     print(f"   📚 Wikipedia tokens: {data_stats['wikipedia_tokens']:,} (ACTIVE)")
     print(f"   🔄 Train/Val split: {len(train_data):,} / {len(val_data):,}")
     
@@ -765,7 +779,7 @@ def load_and_process_all_data(data_dir='data',
         wiki_pct = (data_stats['wikipedia_tokens'] / data_stats['total_tokens']) * 100
         print(f"   📊 Data mix: {book_pct:.1f}% books, {ultrachat_pct:.1f}% UltraChat, {gen_pct:.1f}% generated, {wiki_pct:.1f}% Wikipedia")
     
-    if data_stats['generated_tokens'] == 0:
+    if data_stats['generated_tokens'] == 0 and generated_data_file is not None:
         print(f"\n⚠️  WARNING: No generated tokens found!")
         print(f"   Make sure to run generate_training_data.py first")
         print(f"   Looking for file: {generated_data_file}")
