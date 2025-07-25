@@ -17,6 +17,8 @@ import os
 import random
 import json
 from datasets import load_dataset
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from threading import Lock
 
 
 def load_and_clean_book(file_path):
@@ -209,8 +211,114 @@ def load_wikipedia_data(dataset_name="wikimedia/wikipedia", subset="20231101.en"
         return None
 
 
-def process_ultrachat_conversations(ultrachat_data, tokenizer):
-    """Convert UltraChat conversations to training format"""
+def process_single_conversation(conversation_data):
+    """Process a single UltraChat conversation - helper function for multithreading"""
+    try:
+        # UltraChat format: each example has a 'data' field with conversation list
+        conversation = conversation_data.get('data', [])
+        
+        if not conversation or len(conversation) < 2:
+            return None
+        
+        # Format conversation into a readable text format
+        conversation_text = ""
+        
+        for i, message in enumerate(conversation):
+            if i == 0:
+                # First message is usually the human question
+                conversation_text += f"Human: {message}\n\n"
+            elif i == 1:
+                # Second message is usually the assistant response
+                conversation_text += f"Assistant: {message}\n\n"
+            elif i % 2 == 0:
+                # Even indices are human messages
+                conversation_text += f"Human: {message}\n\n"
+            else:
+                # Odd indices are assistant messages
+                conversation_text += f"Assistant: {message}\n\n"
+        
+        # Add conversation end marker
+        conversation_text += "<|endofconversation|>\n\n"
+        
+        return conversation_text
+        
+    except Exception as e:
+        return None
+
+
+def process_ultrachat_conversations(ultrachat_data, tokenizer, max_workers=4):
+    """Convert UltraChat conversations to training format using multithreading"""
+    if ultrachat_data is None:
+        return []
+    
+    print(f"Processing {len(ultrachat_data):,} UltraChat conversations using {max_workers} threads...")
+    
+    all_tokens = []
+    processed_conversations = 0
+    progress_lock = Lock()
+    
+    # Convert dataset to list for easier processing
+    conversations_list = list(ultrachat_data)
+    
+    # Process conversations in parallel
+    formatted_conversations = []
+    
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        # Submit all conversations for processing
+        future_to_conversation = {
+            executor.submit(process_single_conversation, conversation): i 
+            for i, conversation in enumerate(conversations_list)
+        }
+        
+        # Collect results as they complete
+        for future in as_completed(future_to_conversation):
+            try:
+                formatted_conversation = future.result()
+                if formatted_conversation is not None:
+                    formatted_conversations.append(formatted_conversation)
+                
+                with progress_lock:
+                    processed_conversations += 1
+                    if processed_conversations % 5000 == 0:
+                        print(f"  Processed {processed_conversations:,} conversations...")
+                        
+            except Exception as e:
+                print(f"⚠️  Error processing conversation: {e}")
+                continue
+    
+    print(f"✅ Formatted {len(formatted_conversations):,} conversations, now tokenizing...")
+    
+    # Tokenize all formatted conversations
+    tokenization_batch_size = 1000
+    
+    for i in range(0, len(formatted_conversations), tokenization_batch_size):
+        batch = formatted_conversations[i:i + tokenization_batch_size]
+        
+        for conversation_text in batch:
+            try:
+                # Tokenize the conversation
+                tokens = tokenizer.encode(conversation_text, add_special_tokens=False)
+                all_tokens.extend(tokens)
+                
+                # Add EOS token between conversations
+                all_tokens.append(tokenizer.eos_token_id)
+                
+            except Exception as e:
+                print(f"⚠️  Error tokenizing conversation: {e}")
+                continue
+        
+        # Progress update for tokenization
+        tokenized_so_far = min(i + tokenization_batch_size, len(formatted_conversations))
+        if tokenized_so_far % 5000 == 0:
+            print(f"  Tokenized {tokenized_so_far:,} conversations...")
+    
+    print(f"✅ Processed {len(formatted_conversations):,} UltraChat conversations into {len(all_tokens):,} tokens")
+    
+    return all_tokens
+
+
+def process_ultrachat_conversations_legacy(ultrachat_data, tokenizer):
+    """Convert UltraChat conversations to training format (legacy single-threaded version)"""
     if ultrachat_data is None:
         return []
     
@@ -299,8 +407,120 @@ def load_generated_training_data(file_path="generated_training_data.json"):
         return None
 
 
-def process_generated_conversations(generated_data, tokenizer):
-    """Convert generated training conversations to training format"""
+def process_single_generated_conversation(conversation_data):
+    """Process a single generated conversation - helper function for multithreading"""
+    try:
+        # Generated data format: each example has a 'data' field with [prompt, response]
+        conversation = conversation_data.get('data', [])
+        
+        if not conversation or len(conversation) != 2:
+            return None
+        
+        # Format conversation - use raw text without Human/Assistant prefixes
+        prompt, response = conversation[0], conversation[1]
+        
+        # Check for potential issues in the data
+        if len(prompt) < 10 or len(response) < 10:
+            return None  # Skip very short conversations
+        
+        # Check for repetitive patterns in the response
+        words = response.split()
+        if len(words) > 3:
+            # Check if response is just repeating the same word
+            unique_words = set(words)
+            if len(unique_words) / len(words) < 0.3:  # Too repetitive
+                return None
+        
+        conversation_text = f"{prompt}\n\n{response}\n\n"
+        
+        # Add conversation end marker
+        conversation_text += "<|endofconversation|>\n\n"
+        
+        return conversation_text
+        
+    except Exception as e:
+        return None
+
+
+def process_generated_conversations(generated_data, tokenizer, max_workers=4):
+    """Convert generated training conversations to training format using multithreading"""
+    if generated_data is None:
+        return []
+    
+    print(f"Processing {len(generated_data):,} generated conversations...")
+    
+    all_tokens = []
+    processed_conversations = 0
+    
+    # Limit generated data to prevent overfitting
+    max_generated_conversations = min(len(generated_data), 5000)  # Limit to 5K conversations
+    if len(generated_data) > max_generated_conversations:
+        print(f"   Limiting generated data to {max_generated_conversations:,} conversations to prevent overfitting")
+        generated_data = generated_data[:max_generated_conversations]
+    
+    print(f"Processing {len(generated_data):,} generated conversations using {max_workers} threads...")
+    
+    progress_lock = Lock()
+    
+    # Process conversations in parallel
+    formatted_conversations = []
+    
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        # Submit all conversations for processing
+        future_to_conversation = {
+            executor.submit(process_single_generated_conversation, conversation): i 
+            for i, conversation in enumerate(generated_data)
+        }
+        
+        # Collect results as they complete
+        for future in as_completed(future_to_conversation):
+            try:
+                formatted_conversation = future.result()
+                if formatted_conversation is not None:
+                    formatted_conversations.append(formatted_conversation)
+                
+                with progress_lock:
+                    processed_conversations += 1
+                    if processed_conversations % 1000 == 0:
+                        print(f"  Processed {processed_conversations:,} conversations...")
+                        
+            except Exception as e:
+                print(f"⚠️  Error processing generated conversation: {e}")
+                continue
+    
+    print(f"✅ Formatted {len(formatted_conversations):,} generated conversations, now tokenizing...")
+    
+    # Tokenize all formatted conversations
+    tokenization_batch_size = 500  # Smaller batches for generated data
+    
+    for i in range(0, len(formatted_conversations), tokenization_batch_size):
+        batch = formatted_conversations[i:i + tokenization_batch_size]
+        
+        for conversation_text in batch:
+            try:
+                # Tokenize the conversation
+                tokens = tokenizer.encode(conversation_text, add_special_tokens=False)
+                all_tokens.extend(tokens)
+                
+                # Add EOS token between conversations
+                all_tokens.append(tokenizer.eos_token_id)
+                
+            except Exception as e:
+                print(f"⚠️  Error tokenizing conversation: {e}")
+                continue
+        
+        # Progress update for tokenization
+        tokenized_so_far = min(i + tokenization_batch_size, len(formatted_conversations))
+        if tokenized_so_far % 1000 == 0:
+            print(f"  Tokenized {tokenized_so_far:,} conversations...")
+    
+    print(f"✅ Processed {len(formatted_conversations):,} generated conversations into {len(all_tokens):,} tokens")
+    
+    return all_tokens
+
+
+def process_generated_conversations_legacy(generated_data, tokenizer):
+    """Convert generated training conversations to training format (legacy single-threaded version)"""
     if generated_data is None:
         return []
     
@@ -365,48 +585,163 @@ def process_generated_conversations(generated_data, tokenizer):
     return all_tokens
 
 
-def process_wikipedia_articles(wikipedia_data, tokenizer):
-    """Convert Wikipedia articles to training format"""
+def process_single_article(article_data):
+    """Process a single Wikipedia article - helper function for multithreading"""
+    try:
+        article_text = article_data.get('text', '')
+        
+        if not article_text or len(article_text.strip()) < 100:
+            return None  # Skip very short articles
+        
+        # Use only the article text, no title or URL formatting
+        formatted_text = f"{article_text}\n\n"
+        
+        # Add article end marker
+        formatted_text += "<|endofarticle|>\n\n"
+        
+        return formatted_text
+        
+    except Exception as e:
+        return None
+
+
+def process_wikipedia_articles(wikipedia_data, tokenizer, max_workers=4):
+    """Convert Wikipedia articles to training format using multithreading"""
     if wikipedia_data is None:
         return []
     
-    print(f"Processing {len(wikipedia_data):,} Wikipedia articles...")
+    print(f"Processing {len(wikipedia_data):,} Wikipedia articles using {max_workers} threads...")
     
     all_tokens = []
     processed_articles = 0
+    progress_lock = Lock()
     
-    for example in wikipedia_data:
-        try:
-            # Wikipedia format: each example has 'id', 'url', 'title', 'text' fields
-            article_text = example.get('text', '')
-            
-            if not article_text or len(article_text.strip()) < 100:
-                continue  # Skip very short articles
-            
-            # Use only the article text, no title or URL formatting
-            formatted_text = f"{article_text}\n\n"
-            
-            # Add article end marker
-            formatted_text += "<|endofarticle|>\n\n"
-            
-            # Tokenize the article
-            tokens = tokenizer.encode(formatted_text, add_special_tokens=False)
-            all_tokens.extend(tokens)
-            
-            # Add EOS token between articles
-            all_tokens.append(tokenizer.eos_token_id)
-            
-            processed_articles += 1
-            
-            # Progress reporting
-            if processed_articles % 5000 == 0:
-                print(f"  Processed {processed_articles:,} articles...")
+    # Convert dataset to list for easier batching
+    articles_list = list(wikipedia_data)
+    
+    # Process articles in parallel
+    batch_size = max(1, len(articles_list) // (max_workers * 4))  # Create more batches than workers
+    formatted_texts = []
+    
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        # Submit all articles for processing
+        future_to_article = {
+            executor.submit(process_single_article, article): i 
+            for i, article in enumerate(articles_list)
+        }
+        
+        # Collect results as they complete
+        for future in as_completed(future_to_article):
+            try:
+                formatted_text = future.result()
+                if formatted_text is not None:
+                    formatted_texts.append(formatted_text)
                 
-        except Exception as e:
-            print(f"⚠️  Error processing article: {e}")
-            continue
+                with progress_lock:
+                    processed_articles += 1
+                    if processed_articles % 5000 == 0:
+                        print(f"  Processed {processed_articles:,} articles...")
+                        
+            except Exception as e:
+                print(f"⚠️  Error processing article: {e}")
+                continue
     
-    print(f"✅ Processed {processed_articles:,} Wikipedia articles into {len(all_tokens):,} tokens")
+    print(f"✅ Formatted {len(formatted_texts):,} articles, now tokenizing...")
+    
+    # Tokenize all formatted texts
+    # We'll do this in batches to manage memory and show progress
+    tokenization_batch_size = 1000
+    
+    for i in range(0, len(formatted_texts), tokenization_batch_size):
+        batch = formatted_texts[i:i + tokenization_batch_size]
+        
+        for formatted_text in batch:
+            try:
+                # Tokenize the article
+                tokens = tokenizer.encode(formatted_text, add_special_tokens=False)
+                all_tokens.extend(tokens)
+                
+                # Add EOS token between articles
+                all_tokens.append(tokenizer.eos_token_id)
+                
+            except Exception as e:
+                print(f"⚠️  Error tokenizing article: {e}")
+                continue
+        
+        # Progress update for tokenization
+        tokenized_so_far = min(i + tokenization_batch_size, len(formatted_texts))
+        if tokenized_so_far % 5000 == 0:
+            print(f"  Tokenized {tokenized_so_far:,} articles...")
+    
+    print(f"✅ Processed {len(formatted_texts):,} Wikipedia articles into {len(all_tokens):,} tokens")
+    
+    return all_tokens
+
+
+def process_wikipedia_articles_chunked(wikipedia_data, tokenizer, max_workers=4, chunk_size=1000):
+    """
+    Alternative multithreaded approach that processes articles in chunks
+    This can be more memory efficient for very large datasets
+    """
+    if wikipedia_data is None:
+        return []
+    
+    print(f"Processing {len(wikipedia_data):,} Wikipedia articles in chunks of {chunk_size} using {max_workers} threads...")
+    
+    all_tokens = []
+    total_processed = 0
+    
+    # Convert to list and split into chunks
+    articles_list = list(wikipedia_data)
+    
+    def process_article_chunk(chunk):
+        """Process a chunk of articles"""
+        chunk_tokens = []
+        chunk_processed = 0
+        
+        for article in chunk:
+            try:
+                article_text = article.get('text', '')
+                
+                if not article_text or len(article_text.strip()) < 100:
+                    continue
+                
+                # Format the article
+                formatted_text = f"{article_text}\n\n<|endofarticle|>\n\n"
+                
+                # Tokenize the article
+                tokens = tokenizer.encode(formatted_text, add_special_tokens=False)
+                chunk_tokens.extend(tokens)
+                
+                # Add EOS token between articles
+                chunk_tokens.append(tokenizer.eos_token_id)
+                
+                chunk_processed += 1
+                
+            except Exception as e:
+                continue
+        
+        return chunk_tokens, chunk_processed
+    
+    # Process chunks in parallel
+    for i in range(0, len(articles_list), chunk_size):
+        chunk = articles_list[i:i + chunk_size]
+        chunks = [chunk[j:j + len(chunk)//max_workers + 1] for j in range(0, len(chunk), len(chunk)//max_workers + 1)]
+        
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = [executor.submit(process_article_chunk, chunk) for chunk in chunks if chunk]
+            
+            for future in as_completed(futures):
+                try:
+                    chunk_tokens, chunk_processed = future.result()
+                    all_tokens.extend(chunk_tokens)
+                    total_processed += chunk_processed
+                except Exception as e:
+                    print(f"⚠️  Error processing chunk: {e}")
+        
+        print(f"  Processed {total_processed:,} articles so far...")
+    
+    print(f"✅ Processed {total_processed:,} Wikipedia articles into {len(all_tokens):,} tokens")
     
     return all_tokens
 
@@ -628,7 +963,8 @@ def load_and_process_all_data(data_dir='data',
                              wikipedia_samples=300000,  # Updated default to 300K
                              generated_data_file=None,  # Updated default to None (disabled)
                              train_split=0.8, 
-                             seed=42):
+                             seed=42,
+                             max_workers=4):  # Number of threads for Wikipedia processing
     """
     Complete data loading pipeline - loads books, UltraChat, generated data, and Wikipedia, processes and combines them
     
@@ -639,6 +975,7 @@ def load_and_process_all_data(data_dir='data',
         generated_data_file (str): Path to generated training data JSON file (default: None - disabled)
         train_split (float): Fraction of data to use for training (rest for validation)
         seed (int): Random seed for reproducible sampling
+        max_workers (int): Number of threads for Wikipedia processing (default: 4)
     
     Returns:
         tuple: (train_data, val_data, data_stats) where data_stats contains metadata
@@ -647,6 +984,7 @@ def load_and_process_all_data(data_dir='data',
     
     print("🔄 Starting data loading pipeline (BOOKS + WIKIPEDIA)...")
     print("   📚 UltraChat and Generated data disabled for focused factual training")
+    print(f"   🚀 Using {max_workers} threads for parallel processing (adjust max_workers parameter to tune performance)")
     
     # Load tokenizer
     print("\n🔤 Loading tokenizer...")
@@ -681,8 +1019,8 @@ def load_and_process_all_data(data_dir='data',
         
         # Process UltraChat conversations
         if ultrachat_data is not None:
-            print("\n🔄 Processing UltraChat conversations...")
-            ultrachat_tokens = process_ultrachat_conversations(ultrachat_data, tokenizer)
+            print(f"\n🔄 Processing UltraChat conversations with {max_workers} threads...")
+            ultrachat_tokens = process_ultrachat_conversations(ultrachat_data, tokenizer, max_workers=max_workers)
         else:
             print("⚠️  Skipping UltraChat data due to loading error")
     else:
@@ -700,8 +1038,8 @@ def load_and_process_all_data(data_dir='data',
             print_conversation_samples("Generated", generated_data, max_samples=10)
         
         if generated_data is not None:
-            print("\n🔄 Processing generated conversations...")
-            generated_tokens = process_generated_conversations(generated_data, tokenizer)
+            print(f"\n🔄 Processing generated conversations with {max_workers} threads...")
+            generated_tokens = process_generated_conversations(generated_data, tokenizer, max_workers=max_workers)
         else:
             print("⚠️  No generated training data found - continuing without it")
     else:
@@ -724,8 +1062,8 @@ def load_and_process_all_data(data_dir='data',
     # Process Wikipedia articles
     wikipedia_tokens = []
     if wikipedia_data is not None:
-        print("\n🔄 Processing Wikipedia articles...")
-        wikipedia_tokens = process_wikipedia_articles(wikipedia_data, tokenizer)
+        print(f"\n🔄 Processing Wikipedia articles with {max_workers} threads...")
+        wikipedia_tokens = process_wikipedia_articles(wikipedia_data, tokenizer, max_workers=max_workers)
     else:
         print("⚠️  Skipping Wikipedia data due to loading error")
     
