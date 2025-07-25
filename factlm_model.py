@@ -138,9 +138,12 @@ class FactLM(nn.Module):
         x = self.pos_encoder(x)
         x = self.embed_dropout(x)
         
+        # Create causal mask using PyTorch's built-in method
+        seq_len = x.size(1)
+        causal_mask = nn.Transformer.generate_square_subsequent_mask(seq_len, device=x.device)
+        
         # Pass through transformer with causal attention
-        # Using is_causal=True is more efficient than manually creating masks
-        x = self.encoder(x, is_causal=True)
+        x = self.encoder(x, mask=causal_mask, is_causal=True)
 
         # Output projection
         x = self.fc(x)
