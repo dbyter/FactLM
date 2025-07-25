@@ -379,13 +379,12 @@ def process_wikipedia_articles(wikipedia_data, tokenizer):
         try:
             # Wikipedia format: each example has 'id', 'url', 'title', 'text' fields
             article_text = example.get('text', '')
-            article_title = example.get('title', '')
             
             if not article_text or len(article_text.strip()) < 100:
                 continue  # Skip very short articles
             
-            # Format article with title as header
-            formatted_text = f"# {article_title}\n\n{article_text}\n\n"
+            # Use only the article text, no title or URL formatting
+            formatted_text = f"{article_text}\n\n"
             
             # Add article end marker
             formatted_text += "<|endofarticle|>\n\n"
@@ -606,9 +605,7 @@ def print_wikipedia_samples(wikipedia_data, max_samples=10):
             break
             
         try:
-            title = article.get('title', 'Unknown Title')
             text = article.get('text', '')
-            url = article.get('url', '')
             
             if len(text) > 50:  # Skip very short articles
                 # Truncate text for readability
@@ -616,9 +613,7 @@ def print_wikipedia_samples(wikipedia_data, max_samples=10):
                 # Clean up text formatting
                 clean_text = ' '.join(text_display.split())
                 
-                print(f"\n{count+1:2d}. TITLE: {title}")
-                print(f"   URL:   {url}")
-                print(f"   TEXT:  {clean_text}")
+                print(f"\n{count+1:2d}. {clean_text}")
                 count += 1
                     
         except Exception as e:
@@ -630,7 +625,7 @@ def print_wikipedia_samples(wikipedia_data, max_samples=10):
 
 def load_and_process_all_data(data_dir='data', 
                              ultrachat_samples=0,  # Updated default to 0 (disabled)
-                             wikipedia_samples=200000,  # Updated default to 200K
+                             wikipedia_samples=150000,  # Updated default to 150K
                              generated_data_file=None,  # Updated default to None (disabled)
                              train_split=0.8, 
                              seed=42):
@@ -640,7 +635,7 @@ def load_and_process_all_data(data_dir='data',
     Args:
         data_dir (str): Directory containing book*.txt files
         ultrachat_samples (int): Number of UltraChat conversations to sample (default: 0 - disabled)
-        wikipedia_samples (int): Number of Wikipedia articles to sample (default: 200K)
+        wikipedia_samples (int): Number of Wikipedia articles to sample (default: 150K)
         generated_data_file (str): Path to generated training data JSON file (default: None - disabled)
         train_split (float): Fraction of data to use for training (rest for validation)
         seed (int): Random seed for reproducible sampling
@@ -676,7 +671,7 @@ def load_and_process_all_data(data_dir='data',
         print("\n💬 Loading UltraChat dataset...")
         ultrachat_data = load_ultrachat_data(
             dataset_name="stingning/ultrachat",
-            num_samples=ultrachat_samples,  # Use the parameter value (now 75K)
+            num_samples=ultrachat_samples,  # Use the parameter value
             seed=seed
         )
         
@@ -718,7 +713,7 @@ def load_and_process_all_data(data_dir='data',
     wikipedia_data = load_wikipedia_data(
         dataset_name="wikimedia/wikipedia",
         subset="20231101.en",
-        num_samples=wikipedia_samples, # Use the parameter value (now 200K)
+        num_samples=wikipedia_samples, # Use the parameter value (now 150K)
         seed=seed
     )
     

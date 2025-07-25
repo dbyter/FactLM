@@ -442,7 +442,7 @@ if __name__ == "__main__":
     print("🚀 FactLM Training - Efficient Model with DataLoaders")
     print("=" * 55)
     print("📝 Features: Optimized model (d_model=256), efficient DataLoaders")
-    print("📈 Dataset: Books + 200K Wikipedia (factual knowledge focus)")
+    print("📈 Dataset: Books + 150K Wikipedia (factual knowledge focus)")
     print("⚡ Performance: Optimized data loading, step-based checkpoints")
     print("💾 Checkpoints: Every epoch + every 10,000 steps")
     print("🔄 Resume training by modifying this script to load from checkpoint")
@@ -451,7 +451,7 @@ if __name__ == "__main__":
     training_data, validation_data, data_stats = load_and_process_all_data(
         data_dir='data',
         ultrachat_samples=0,  # Removed UltraChat conversations
-        wikipedia_samples=200000,  # Keep 200K Wikipedia articles
+        wikipedia_samples=150000,  # Keep 150K Wikipedia articles
         generated_data_file=None,  # Remove generated data
         train_split=0.8,
         seed=42
