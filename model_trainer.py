@@ -368,15 +368,15 @@ if __name__ == "__main__":
     print("🚀 FactLM Training - Efficient Model")
     print("=" * 50)
     print("📝 Features: Smaller model (d_model=256), 256-token sequences, automatic checkpointing")
-    print("📈 Dataset: Books + 50K UltraChat + Generated data + 75K Wikipedia")
+    print("📈 Dataset: Books + 75K UltraChat + Generated data + 125K Wikipedia")
     print("💾 Checkpoints saved to: checkpoints/training_TIMESTAMP/")
     print("🔄 Resume training by modifying this script to load from checkpoint")
     
     # Load and process all data using the data_loader module
     training_data, validation_data, data_stats = load_and_process_all_data(
         data_dir='data',
-        ultrachat_samples=50000,  # Increased from 15K to 50K UltraChat conversations
-        wikipedia_samples=75000,  # Increased from 25K to 75K Wikipedia articles
+        ultrachat_samples=75000,  # Increased from 50K to 75K UltraChat conversations
+        wikipedia_samples=125000,  # Increased from 75K to 125K Wikipedia articles
         train_split=0.8,
         seed=42
     )
