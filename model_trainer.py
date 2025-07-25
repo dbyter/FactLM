@@ -21,6 +21,7 @@ generate_text.py for text generation.
 import torch
 import torch.nn as nn
 from torch.nn.utils import clip_grad_norm_
+from torch.utils.data import Dataset, DataLoader
 from transformers import AutoTokenizer
 from factlm_model import FactLM
 from data_loader import load_and_process_all_data
@@ -28,8 +29,56 @@ import os
 import math
 from datetime import datetime
 
+
+class TokenDataset(Dataset):
+    """Simple dataset for tokenized sequences"""
+    
+    def __init__(self, tokens, sequence_length):
+        self.tokens = tokens
+        self.sequence_length = sequence_length
+        # Calculate how many complete sequences we can make
+        self.num_sequences = (len(tokens) - 1) // sequence_length
+        
+    def __len__(self):
+        return self.num_sequences
+    
+    def __getitem__(self, idx):
+        start_idx = idx * self.sequence_length
+        end_idx = start_idx + self.sequence_length
+        
+        inputs = self.tokens[start_idx:end_idx]
+        targets = self.tokens[start_idx + 1:end_idx + 1]
+        
+        return inputs, targets
+
 def train_model(model, train_data, val_data, epochs, batch_size, sequence_length, learning_rate, device, max_grad_norm=1.0, checkpoint_every=5, save_checkpoints=True):
     model.to(device)
+    
+    # Create DataLoaders with workers for efficient data loading
+    print(f"🔧 Creating DataLoaders with 4 workers...")
+    train_dataset = TokenDataset(train_data, sequence_length)
+    val_dataset = TokenDataset(val_data, sequence_length)
+    
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=4,
+        pin_memory=True if device.type != 'cpu' else False,
+        persistent_workers=True
+    )
+    
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=2,  # Fewer workers for validation
+        pin_memory=True if device.type != 'cpu' else False,
+        persistent_workers=True
+    )
+    
+    print(f"✅ DataLoaders created: {len(train_loader)} train batches, {len(val_loader)} val batches")
+    
     # Improved optimizer settings for better stability
     optimizer = torch.optim.AdamW(
         model.parameters(), 
@@ -40,29 +89,19 @@ def train_model(model, train_data, val_data, epochs, batch_size, sequence_length
     )
     
     # Learning rate scheduler with warmup
-    steps_per_epoch = len(train_data) // (batch_size * sequence_length)
+    steps_per_epoch = len(train_loader)
     
     # Ensure we have enough steps for proper scheduling
     if steps_per_epoch < 1:
         print(f"⚠️  Dataset too small for current batch config!")
-        print(f"   Data tokens: {len(train_data):,}")
-        print(f"   Tokens per batch: {batch_size * sequence_length:,}")
-        print(f"   Steps per epoch: {steps_per_epoch}")
-        print(f"   Reducing batch size to make training possible...")
-        
-        # Auto-adjust batch size to have at least 10 steps per epoch
-        max_batch_tokens = len(train_data) // 10
-        sequence_length = min(sequence_length, 512)  # Cap sequence length to new max
-        batch_size = max(1, max_batch_tokens // sequence_length)
-        
-        print(f"   New config: batch_size={batch_size}, sequence_length={sequence_length}")
-        steps_per_epoch = len(train_data) // (batch_size * sequence_length)
+        return model, batch_size, sequence_length
     
     # More conservative warmup and decay schedule
     warmup_steps = max(100, steps_per_epoch // 2)  # Longer warmup for stability
     total_steps = steps_per_epoch * epochs
     
     print(f"Training schedule: {steps_per_epoch} steps/epoch, {warmup_steps} warmup steps, {total_steps} total steps")
+    print(f"💾 Checkpoints: Every {checkpoint_every} epochs + every 10,000 steps")
     
     # Early stopping variables
     best_val_loss = float('inf')
@@ -92,7 +131,7 @@ def train_model(model, train_data, val_data, epochs, batch_size, sequence_length
             # Cosine decay with minimum LR of 10% of base
             return max(0.1, 0.5 * (1 + math.cos(progress * math.pi)))
 
-    def save_checkpoint(epoch, model, optimizer, scheduler, train_loss, val_loss, is_best=False):
+    def save_checkpoint(epoch, model, optimizer, scheduler, train_loss, val_loss, is_best=False, step=None):
         if not save_checkpoints:
             return
             
@@ -104,7 +143,7 @@ def train_model(model, train_data, val_data, epochs, batch_size, sequence_length
             'train_loss': train_loss,
             'val_loss': val_loss,
             'best_val_loss': best_val_loss,
-            'step': step
+            'step': step if step is not None else 0
         }
         
         # Save regular checkpoint every N epochs
@@ -112,6 +151,12 @@ def train_model(model, train_data, val_data, epochs, batch_size, sequence_length
             checkpoint_path = os.path.join(checkpoint_dir, f'checkpoint_epoch_{epoch:03d}.pth')
             torch.save(checkpoint, checkpoint_path)
             print(f"💾 Saving checkpoint: {checkpoint_path}")
+        
+        # Save step-based checkpoint every 10K steps
+        if step is not None and step % 10000 == 0:
+            checkpoint_path = os.path.join(checkpoint_dir, f'checkpoint_step_{step:06d}.pth')
+            torch.save(checkpoint, checkpoint_path)
+            print(f"💾 Saving step checkpoint: {checkpoint_path}")
         
         # Save best model checkpoint
         if is_best:
@@ -164,23 +209,10 @@ def train_model(model, train_data, val_data, epochs, batch_size, sequence_length
         num_batches = 0
         total_grad_norm = 0
         
-        # Create proper sequence batches for better GPU utilization  
-        tokens_per_batch = batch_size * sequence_length
-        
-        for i in range(0, len(train_data) - tokens_per_batch - 1, tokens_per_batch):
-            # Get input tokens and target tokens (shifted by 1)
-            input_tokens = train_data[i:i + tokens_per_batch]
-            target_tokens = train_data[i + 1:i + tokens_per_batch + 1]
-            
-            if len(input_tokens) < tokens_per_batch or len(target_tokens) < tokens_per_batch:
-                continue  # Skip incomplete batches
-                
-            # Reshape into [batch_size, sequence_length]
-            inputs = input_tokens.view(batch_size, sequence_length)
-            targets = target_tokens.view(batch_size, sequence_length)
-
-            inputs = inputs.to(device)
-            targets = targets.to(device)
+        # Use DataLoader for efficient batching with workers
+        for batch_idx, (inputs, targets) in enumerate(train_loader):
+            inputs = inputs.to(device, non_blocking=True)
+            targets = targets.to(device, non_blocking=True)
 
             optimizer.zero_grad()
             outputs = model(inputs)  # Shape: [batch_size, sequence_length, vocab_size]
@@ -216,32 +248,48 @@ def train_model(model, train_data, val_data, epochs, batch_size, sequence_length
             if step % 100 == 0:
                 current_lr = scheduler.get_last_lr()[0]
                 smoothed_loss = sum(recent_losses) / len(recent_losses) if recent_losses else loss.item()
-                print(f"  Step {step}: Loss {loss.item():.4f} (Smooth: {smoothed_loss:.4f}), LR {current_lr:.6f}, Grad Norm {grad_norm.item():.3f}")
+                progress = (batch_idx + 1) / len(train_loader) * 100
+                print(f"  Step {step}: Loss {loss.item():.4f} (Smooth: {smoothed_loss:.4f}), LR {current_lr:.6f}, Grad Norm {grad_norm.item():.3f} [{progress:.1f}%]")
+            
+            # Save checkpoint every 10K steps
+            if step % 10000 == 0:
+                # Quick validation for step checkpoint
+                model.eval()
+                with torch.no_grad():
+                    val_loss_quick = 0
+                    val_batches_quick = 0
+                    for val_inputs, val_targets in val_loader:
+                        if val_batches_quick >= 10:  # Only validate on first 10 batches for speed
+                            break
+                        val_inputs = val_inputs.to(device, non_blocking=True)
+                        val_targets = val_targets.to(device, non_blocking=True)
+                        val_outputs = model(val_inputs)
+                        val_outputs = val_outputs.view(-1, val_outputs.size(-1))
+                        val_targets = val_targets.view(-1)
+                        val_loss_quick += criterion(val_outputs, val_targets).item()
+                        val_batches_quick += 1
+                
+                avg_val_loss_quick = val_loss_quick / val_batches_quick if val_batches_quick > 0 else 0
+                avg_train_loss_quick = total_loss / num_batches if num_batches > 0 else 0
+                
+                save_checkpoint(epoch + 1, model, optimizer, scheduler, avg_train_loss_quick, avg_val_loss_quick, step=step)
+                model.train()  # Back to training mode
 
-        # Validation
+        # Full validation at end of epoch
         model.eval()
         with torch.no_grad():
             val_loss = 0
             val_batches = 0
             
-            for i in range(0, len(val_data) - tokens_per_batch - 1, tokens_per_batch):
-                input_tokens = val_data[i:i + tokens_per_batch]
-                target_tokens = val_data[i + 1:i + tokens_per_batch + 1]
-                
-                if len(input_tokens) < tokens_per_batch or len(target_tokens) < tokens_per_batch:
-                    continue
-                    
-                inputs = input_tokens.view(batch_size, sequence_length)
-                targets = target_tokens.view(batch_size, sequence_length)
+            for val_inputs, val_targets in val_loader:
+                val_inputs = val_inputs.to(device, non_blocking=True)
+                val_targets = val_targets.to(device, non_blocking=True)
 
-                inputs = inputs.to(device)
-                targets = targets.to(device)
-
-                outputs = model(inputs)
+                outputs = model(val_inputs)
                 outputs = outputs.view(-1, outputs.size(-1))
-                targets = targets.view(-1)
+                val_targets = val_targets.view(-1)
                 
-                loss = criterion(outputs, targets)
+                loss = criterion(outputs, val_targets)
                 val_loss += loss.item()
                 val_batches += 1
 
@@ -262,7 +310,7 @@ def train_model(model, train_data, val_data, epochs, batch_size, sequence_length
             print(f"Epoch {epoch+1}/{epochs}, Train Loss: {avg_train_loss:.4f}, Val Loss: {avg_val_loss:.4f}, Grad Norm: {avg_grad_norm:.4f}, LR: {current_lr:.6f} (patience: {patience_counter}/{patience})")
         
         # Save checkpoints
-        save_checkpoint(epoch + 1, model, optimizer, scheduler, avg_train_loss, avg_val_loss, is_best=is_best_model)
+        save_checkpoint(epoch + 1, model, optimizer, scheduler, avg_train_loss, avg_val_loss, is_best=is_best_model, step=step)
         
         # Check for early stopping
         if patience_counter >= patience:
@@ -365,11 +413,12 @@ def save_model(model, tokenizer, model_config, training_stats, device_name):
 
 # Example usage and data setup
 if __name__ == "__main__":
-    print("🚀 FactLM Training - Efficient Model")
-    print("=" * 50)
-    print("📝 Features: Smaller model (d_model=256), 256-token sequences, automatic checkpointing")
+    print("🚀 FactLM Training - Efficient Model with DataLoaders")
+    print("=" * 55)
+    print("📝 Features: Optimized model (d_model=256), 4-worker DataLoaders")
     print("📈 Dataset: Books + 75K UltraChat + Generated data + 125K Wikipedia")
-    print("💾 Checkpoints saved to: checkpoints/training_TIMESTAMP/")
+    print("⚡ Performance: Multi-worker data loading, step-based checkpoints")
+    print("💾 Checkpoints: Every epoch + every 10,000 steps")
     print("🔄 Resume training by modifying this script to load from checkpoint")
     
     # Load and process all data using the data_loader module
@@ -470,8 +519,9 @@ if __name__ == "__main__":
     print(f"Device: {device} ({device_name})")
     print(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
     print(f"Batch configuration: {batch_size} sequences × {sequence_length} tokens = {batch_size * sequence_length:,} tokens per batch")
-    print(f"🚀 LONG CONTEXT: Doubled sequence length to {sequence_length} tokens for better conversation understanding")
-    print(f"Checkpoint frequency: Every {checkpoint_every} epoch{'s' if checkpoint_every > 1 else ''}")
+    print(f"Sequence length: {sequence_length} tokens for stable training")
+    print(f"Checkpoint frequency: Every {checkpoint_every} epoch + every 10,000 steps")
+    print(f"DataLoader workers: 4 train + 2 validation (parallel processing)")
     print(f"💡 Head dimension: {head_dim} (optimized for efficiency)")
     
     # Check if configuration is reasonable for dataset size
