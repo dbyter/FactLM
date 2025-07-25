@@ -188,7 +188,7 @@ def load_generated_conversations(data_file="generated_training_data.json"):
     return valid_conversations
 
 
-def fine_tune_model(model, conversations, tokenizer, device, epochs=3, batch_size=8, learning_rate=1e-5, max_length=512):
+def fine_tune_model(model, conversations, tokenizer, device, epochs=3, batch_size=8, learning_rate=5e-4, max_length=512):
     """Fine-tune the model on conversational data"""
     
     print(f"\n🎯 Starting fine-tuning...")
@@ -225,6 +225,13 @@ def fine_tune_model(model, conversations, tokenizer, device, epochs=3, batch_siz
     print(f"✅ Created DataLoaders: {len(train_loader)} train batches, {len(val_loader)} val batches")
     
     # Conservative optimizer for fine-tuning
+    # Learning rate options for better convergence:
+    # learning_rate = 1e-5    # Original (too conservative, slow convergence)
+    # learning_rate = 5e-5    # 5x higher (moderate improvement)
+    # learning_rate = 1e-4    # 10x higher (good balance)
+    # learning_rate = 5e-4    # 50x higher (current default, aggressive but effective)
+    # learning_rate = 1e-3    # 100x higher (try if 5e-4 is stable)
+    
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=learning_rate,
@@ -403,7 +410,7 @@ def main():
             device=device,
             epochs=3,  # Conservative number of epochs
             batch_size=8,  # Smaller batch size for fine-tuning
-            learning_rate=1e-5,  # Low learning rate to preserve existing knowledge
+            learning_rate=5e-4,  # Higher LR (50x original) for better convergence
             max_length=512
         )
         

@@ -101,13 +101,13 @@ def train_model(model, train_data, val_data, epochs, batch_size, sequence_length
     else:
         print(f"   🔄 Single-threaded data loading (avoiding multiprocessing conflicts)")
     
-    # Improved optimizer settings for better stability
+    # Improved optimizer settings for better convergence
     optimizer = torch.optim.AdamW(
         model.parameters(), 
         lr=learning_rate, 
         weight_decay=0.01,  # Reduced weight decay for better stability
-        betas=(0.9, 0.999),  # Standard betas, second moment closer to 1
-        eps=1e-6  # Smaller epsilon for better precision
+        betas=(0.9, 0.95),  # Lower beta2 for faster adaptation
+        eps=1e-8  # Standard epsilon
     )
     
     # Learning rate scheduler with warmup
@@ -118,8 +118,8 @@ def train_model(model, train_data, val_data, epochs, batch_size, sequence_length
         print(f"⚠️  Dataset too small for current batch config!")
         return model, batch_size, sequence_length
     
-    # More conservative warmup and decay schedule
-    warmup_steps = max(100, steps_per_epoch // 2)  # Longer warmup for stability
+    # Faster warmup and more aggressive decay for better convergence
+    warmup_steps = max(50, steps_per_epoch // 4)  # Shorter warmup (1/4 epoch)
     total_steps = steps_per_epoch * epochs
     
     print(f"Training schedule: {steps_per_epoch} steps/epoch, {warmup_steps} warmup steps, {total_steps} total steps")
@@ -129,9 +129,9 @@ def train_model(model, train_data, val_data, epochs, batch_size, sequence_length
     else:
         print(f"📊 DataLoader mode: Single-threaded (forked process compatibility)")
     
-    # Early stopping variables
+    # Early stopping variables - reduced patience for faster convergence detection
     best_val_loss = float('inf')
-    patience = 8  # Increased patience for more stable training
+    patience = 5  # Reduced patience to stop sooner if not converging
     patience_counter = 0
     
     # Checkpoint setup
@@ -147,15 +147,15 @@ def train_model(model, train_data, val_data, epochs, batch_size, sequence_length
     
     def lr_lambda(step):
         if step < warmup_steps:
-            # Smoother warmup with minimum LR
-            return max(0.01, step / warmup_steps)  # Start from 1% of base LR
+            # Linear warmup from 0 to 1
+            return step / warmup_steps
         else:
-            # More gradual cosine decay after warmup  
+            # More aggressive cosine decay for faster convergence
             if total_steps <= warmup_steps:
                 return 1.0  # No decay if no steps after warmup
             progress = (step - warmup_steps) / (total_steps - warmup_steps)
-            # Cosine decay with minimum LR of 10% of base
-            return max(0.1, 0.5 * (1 + math.cos(progress * math.pi)))
+            # Cosine decay with minimum LR of 5% of base (was 10%)
+            return max(0.05, 0.5 * (1 + math.cos(progress * math.pi)))
 
     def save_checkpoint(epoch, model, optimizer, scheduler, train_loss, val_loss, is_best=False, step=None):
         if not save_checkpoints:
@@ -538,7 +538,13 @@ if __name__ == "__main__":
     epochs = 25           # Keep same epochs for good training
     batch_size = 32       # Increased batch size for more stable gradients
     sequence_length = 256  # Start with shorter sequences for stable training
-    learning_rate = 0.00015 # More conservative LR for improved architecture
+    
+    # Learning rate options - try higher rates for better convergence
+    # learning_rate = 0.00015  # Original conservative rate (too slow)
+    # learning_rate = 0.0005   # 3x higher - good starting point
+    learning_rate = 0.001     # 6.7x higher - more aggressive, often works well
+    # learning_rate = 0.002    # Very aggressive - use if 0.001 is stable
+    
     max_grad_norm = 1.0   # Gradient clipping
     checkpoint_every = 1  # Save checkpoint every epoch
     
