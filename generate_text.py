@@ -196,6 +196,28 @@ def load_saved_model(model_path, tokenizer):
         print("⚠️  Checkpoint doesn't have model_config, reconstructing from model state...")
         model_state = checkpoint['model_state_dict']
         
+        # First, check if this is a legacy (custom architecture) or new (PyTorch TransformerEncoder) checkpoint
+        has_legacy_keys = any(key.startswith('encoder_layers.') for key in model_state.keys())
+        has_new_keys = any(key.startswith('encoder.layers.') for key in model_state.keys())
+        
+        print(f"   Architecture detection:")
+        print(f"   - Legacy custom architecture keys: {'Yes' if has_legacy_keys else 'No'}")
+        print(f"   - PyTorch TransformerEncoder keys: {'Yes' if has_new_keys else 'No'}")
+        
+        if has_legacy_keys and not has_new_keys:
+            print("   ❌ ERROR: This checkpoint uses the old custom architecture!")
+            print("   The model code has been updated to use PyTorch's TransformerEncoder.")
+            print("   This checkpoint is incompatible with the current model architecture.")
+            print("")
+            print("   🔧 SOLUTION: Please retrain your model with the updated architecture.")
+            print("   The new architecture has these improvements:")
+            print("   - Better stability and faster training")
+            print("   - Proper causal attention masks") 
+            print("   - More efficient PyTorch implementation")
+            print("   - Improved weight initialization")
+            print("")
+            raise RuntimeError("Incompatible checkpoint format. Please retrain with updated architecture.")
+        
         # Extract configuration from model state dict
         vocab_size = model_state['embedding.weight'].shape[0]
         d_model = model_state['embedding.weight'].shape[1]
@@ -203,51 +225,75 @@ def load_saved_model(model_path, tokenizer):
         # Count number of layers by looking for encoder layer patterns
         num_layers = 0
         layer_keys = []
-        for key in model_state.keys():
-            if key.startswith('encoder_layers.') and key.endswith('.self_attn.q.weight'):
-                layer_keys.append(key)
-                layer_num = int(key.split('.')[1])
-                num_layers = max(num_layers, layer_num + 1)
         
-        print(f"   Found layer keys: {layer_keys}")
+        # Look for PyTorch TransformerEncoder layer patterns
+        for key in model_state.keys():
+            if key.startswith('encoder.layers.') and '.self_attn.' in key:
+                layer_keys.append(key)
+                # Extract layer number from key like "encoder.layers.0.self_attn.in_proj_weight"
+                try:
+                    layer_num = int(key.split('.')[2])
+                    num_layers = max(num_layers, layer_num + 1)
+                except (IndexError, ValueError):
+                    continue
+        
+        print(f"   Found layer keys: {layer_keys[:5]}...")  # Show first 5
         print(f"   Detected {num_layers} layers")
         
         # Fallback if layer detection failed
         if num_layers == 0:
-            print("   ⚠️  Layer detection failed, examining all keys...")
-            encoder_keys = [k for k in model_state.keys() if k.startswith('encoder_layers.')]
-            print(f"   All encoder keys: {encoder_keys[:10]}...")  # Show first 10
+            print("   ⚠️  TransformerEncoder layer detection failed, trying legacy patterns...")
             
-            # Try to extract from any encoder layer key
-            if encoder_keys:
-                # Get the highest layer number found
+            # Try legacy custom architecture patterns
+            legacy_keys = [k for k in model_state.keys() if 'encoder_layers.' in k or 'self_attn.' in k]
+            print(f"   Legacy keys found: {len(legacy_keys)}")
+            
+            if legacy_keys:
+                # Try to extract from legacy encoder layer keys
                 layer_numbers = []
-                for key in encoder_keys:
+                for key in legacy_keys:
                     try:
-                        layer_num = int(key.split('.')[1])
-                        layer_numbers.append(layer_num)
+                        if 'encoder_layers.' in key:
+                            layer_num = int(key.split('encoder_layers.')[1].split('.')[0])
+                            layer_numbers.append(layer_num)
                     except:
                         continue
+                
                 if layer_numbers:
                     num_layers = max(layer_numbers) + 1
-                    print(f"   Fallback detected {num_layers} layers from key analysis")
+                    print(f"   Legacy detection found {num_layers} layers")
             
-            # Final fallback - use common default
+            # Final fallback - use current model default (6 layers)
             if num_layers == 0:
-                num_layers = 8  # Common default
-                print(f"   Using fallback default: {num_layers} layers")
+                num_layers = 6  # Match current model_trainer.py default
+                print(f"   Using current model default: {num_layers} layers")
         
         # Extract number of heads from attention weights
         # q weight shape is [d_model, d_model], so num_heads = d_model / head_dim
-        if 'encoder_layers.0.self_attn.q.weight' in model_state:
+        if 'encoder.layers.0.self_attn.in_proj_weight' in model_state:
+            # PyTorch TransformerEncoder uses in_proj_weight (combined q,k,v)
             # Use consistent 8 heads for the new simplified model
             num_heads = 8   # Always 8 heads in the new configuration
+        elif 'encoder_layers.0.self_attn.q.weight' in model_state:
+            # Legacy custom architecture
+            num_heads = 8   # Consistent with current config
         else:
             num_heads = 8  # Default: 8 heads
         
         # Extract hidden size from feed forward layers
-        if 'encoder_layers.0.feed_forward.0.weight' in model_state:
+        if 'encoder.layers.0.linear1.weight' in model_state:
+            # PyTorch TransformerEncoder uses linear1/linear2
             # The feed-forward layer goes from d_model to d_model*4, but hidden_size is separate
+            ff_hidden_size = model_state['encoder.layers.0.linear1.weight'].shape[0]
+            # Verify this is d_model * 4 as expected
+            if ff_hidden_size == d_model * 4:
+                # hidden_size parameter matches d_model in the new simplified config
+                hidden_size = d_model
+            else:
+                # Fallback if unexpected architecture
+                hidden_size = d_model
+        elif 'encoder_layers.0.feed_forward.0.weight' in model_state:
+            # Legacy custom architecture
             ff_hidden_size = model_state['encoder_layers.0.feed_forward.0.weight'].shape[0]
             # Verify this is d_model * 4 as expected
             if ff_hidden_size == d_model * 4:
