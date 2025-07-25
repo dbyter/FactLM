@@ -132,24 +132,15 @@ class FactLM(nn.Module):
     def init_hidden(self, batch_size):
         return torch.zeros(self.num_layers, batch_size, self.hidden_size)
     
-    def generate_causal_mask(self, seq_len, device):
-        """Generate causal mask for autoregressive generation"""
-        # Create upper triangular mask (True means positions to ignore)
-        mask = torch.triu(torch.ones(seq_len, seq_len, device=device, dtype=torch.bool), diagonal=1)
-        return mask
-
     def forward(self, x):
         # Embedding with scaling (common practice for transformers)
         x = self.embedding(x) * math.sqrt(self.d_model)
         x = self.pos_encoder(x)
         x = self.embed_dropout(x)
         
-        seq_len = x.size(1)
-        # Create causal mask - True means "ignore this position"
-        mask = self.generate_causal_mask(seq_len, x.device)
-
-        # Pass through transformer with causal mask
-        x = self.encoder(x, mask=mask)
+        # Pass through transformer with causal attention
+        # Using is_causal=True is more efficient than manually creating masks
+        x = self.encoder(x, is_causal=True)
 
         # Output projection
         x = self.fc(x)
