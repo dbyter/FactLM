@@ -13,10 +13,16 @@ Key features:
 - Early stopping with validation loss monitoring
 - Complete model and configuration saving for generate_text.py compatibility
 - GPU memory optimization and batch size auto-adjustment
+- Multi-worker data loading for performance
 
 All checkpoints and final models saved by this script are compatible with 
 generate_text.py for text generation.
 """
+
+# Fix for multiprocessing issues on macOS/forked processes
+import os
+os.environ['TOKENIZERS_PARALLELISM'] = 'false'  # Disable tokenizer parallelism
+os.environ['OMP_NUM_THREADS'] = '1'  # Limit OpenMP threads
 
 import torch
 import torch.nn as nn
@@ -25,7 +31,6 @@ from torch.utils.data import Dataset, DataLoader
 from transformers import AutoTokenizer
 from factlm_model import FactLM
 from data_loader import load_and_process_all_data
-import os
 import math
 from datetime import datetime
 
@@ -55,29 +60,46 @@ def train_model(model, train_data, val_data, epochs, batch_size, sequence_length
     model.to(device)
     
     # Create DataLoaders with workers for efficient data loading
-    print(f"🔧 Creating DataLoaders with 4 workers...")
+    print(f"🔧 Creating DataLoaders...")
     train_dataset = TokenDataset(train_data, sequence_length)
     val_dataset = TokenDataset(val_data, sequence_length)
+    
+    # Fix for "forked process" error - disable multiprocessing on problematic systems
+    import multiprocessing as mp
+    try:
+        mp.set_start_method('spawn', force=True)
+        num_workers = 4 if device.type != 'cpu' else 2
+        use_pin_memory = True if device.type != 'cpu' else False
+        print(f"   Using spawn method with {num_workers} workers")
+    except RuntimeError:
+        # Fallback to no multiprocessing if spawn fails
+        num_workers = 0
+        use_pin_memory = False
+        print(f"   Multiprocessing unavailable, using single-threaded data loading")
     
     train_loader = DataLoader(
         train_dataset,
         batch_size=batch_size,
         shuffle=True,
-        num_workers=4,
-        pin_memory=True if device.type != 'cpu' else False,
-        persistent_workers=True
+        num_workers=num_workers,
+        pin_memory=use_pin_memory,
+        persistent_workers=False  # Disabled to avoid forked process issues
     )
     
     val_loader = DataLoader(
         val_dataset,
         batch_size=batch_size,
         shuffle=False,
-        num_workers=2,  # Fewer workers for validation
-        pin_memory=True if device.type != 'cpu' else False,
-        persistent_workers=True
+        num_workers=max(1, num_workers // 2),  # Fewer workers for validation
+        pin_memory=use_pin_memory,
+        persistent_workers=False  # Disabled to avoid forked process issues
     )
     
     print(f"✅ DataLoaders created: {len(train_loader)} train batches, {len(val_loader)} val batches")
+    if num_workers > 0:
+        print(f"   🚀 Parallel data loading: {num_workers} train workers, {max(1, num_workers // 2)} validation workers")
+    else:
+        print(f"   🔄 Single-threaded data loading (avoiding multiprocessing conflicts)")
     
     # Improved optimizer settings for better stability
     optimizer = torch.optim.AdamW(
@@ -102,6 +124,10 @@ def train_model(model, train_data, val_data, epochs, batch_size, sequence_length
     
     print(f"Training schedule: {steps_per_epoch} steps/epoch, {warmup_steps} warmup steps, {total_steps} total steps")
     print(f"💾 Checkpoints: Every {checkpoint_every} epochs + every 10,000 steps")
+    if num_workers > 0:
+        print(f"🚀 DataLoader workers: {num_workers} train + {max(1, num_workers // 2)} validation (parallel processing)")
+    else:
+        print(f"📊 DataLoader mode: Single-threaded (forked process compatibility)")
     
     # Early stopping variables
     best_val_loss = float('inf')
@@ -415,9 +441,9 @@ def save_model(model, tokenizer, model_config, training_stats, device_name):
 if __name__ == "__main__":
     print("🚀 FactLM Training - Efficient Model with DataLoaders")
     print("=" * 55)
-    print("📝 Features: Optimized model (d_model=256), 4-worker DataLoaders")
+    print("📝 Features: Optimized model (d_model=256), efficient DataLoaders")
     print("📈 Dataset: Books + 200K Wikipedia (factual knowledge focus)")
-    print("⚡ Performance: Multi-worker data loading, step-based checkpoints")
+    print("⚡ Performance: Optimized data loading, step-based checkpoints")
     print("💾 Checkpoints: Every epoch + every 10,000 steps")
     print("🔄 Resume training by modifying this script to load from checkpoint")
     
@@ -522,7 +548,6 @@ if __name__ == "__main__":
     print(f"Batch configuration: {batch_size} sequences × {sequence_length} tokens = {batch_size * sequence_length:,} tokens per batch")
     print(f"Sequence length: {sequence_length} tokens for stable training")
     print(f"Checkpoint frequency: Every {checkpoint_every} epoch + every 10,000 steps")
-    print(f"DataLoader workers: 4 train + 2 validation (parallel processing)")
     print(f"💡 Head dimension: {head_dim} (optimized for efficiency)")
     
     # Check if configuration is reasonable for dataset size
