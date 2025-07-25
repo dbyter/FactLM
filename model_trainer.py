@@ -136,20 +136,16 @@ def train_model(model, train_data, val_data, epochs, batch_size, sequence_length
             print(f"   Saved: d_model={saved_config['d_model']}, layers={saved_config['num_layers']}, heads={saved_config['num_heads']}")
             print(f"   Actual: d_model={model.d_model}, layers={model.num_layers}, heads={model.num_heads}")
         
-        # Save regular checkpoint
-        if epoch % checkpoint_every == 0 or is_best:
-            if is_best:
-                checkpoint_path = os.path.join(checkpoint_dir, 'best_model.pth')
-                print(f"💾 Saving BEST checkpoint: {checkpoint_path}")
-            else:
-                checkpoint_path = os.path.join(checkpoint_dir, f'checkpoint_epoch_{epoch:03d}.pth')
-                print(f"💾 Saving checkpoint: {checkpoint_path}")
-            
-            torch.save(checkpoint_data, checkpoint_path)
-        
-        # Always save latest checkpoint (for resuming)
-        latest_path = os.path.join(checkpoint_dir, 'latest_checkpoint.pth')
-        torch.save(checkpoint_data, latest_path)
+        # Always save a checkpoint at the end of each epoch
+        checkpoint_path = os.path.join(checkpoint_dir, f'checkpoint_epoch_{epoch:03d}.pth')
+        print(f"\U0001F4BE Saving checkpoint: {checkpoint_path}")
+        torch.save(checkpoint_data, checkpoint_path)
+
+        # Optionally, still save the best model separately
+        if is_best:
+            best_path = os.path.join(checkpoint_dir, 'best_model.pth')
+            print(f"\U0001F4BE Saving BEST checkpoint: {best_path}")
+            torch.save(checkpoint_data, best_path)
     
     def load_checkpoint(checkpoint_path, model, optimizer, scheduler):
         """Load a training checkpoint for resuming training"""
