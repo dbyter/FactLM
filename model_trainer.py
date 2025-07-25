@@ -78,7 +78,7 @@ def train_model(model, train_data, val_data, epochs, batch_size, sequence_length
         checkpoint_dir = os.path.join('checkpoints', f'training_{timestamp}')
         os.makedirs(checkpoint_dir, exist_ok=True)
         print(f"💾 Checkpoints will be saved to: {checkpoint_dir}")
-        print(f"   Saving every {checkpoint_every} epochs")
+        print(f"   Saving every {checkpoint_every} epoch{'s' if checkpoint_every > 1 else ''}")
     
     def lr_lambda(step):
         if step < warmup_steps:
@@ -367,16 +367,16 @@ def save_model(model, tokenizer, model_config, training_stats, device_name):
 if __name__ == "__main__":
     print("🚀 FactLM Training - Efficient Model")
     print("=" * 50)
-    print("📝 Features: Smaller model (d_model=256), 512-token sequences, automatic checkpointing")
-    print("📈 Dataset: Books + 15K UltraChat + Generated data + 25K Wikipedia")
+    print("📝 Features: Smaller model (d_model=256), 256-token sequences, automatic checkpointing")
+    print("📈 Dataset: Books + 50K UltraChat + Generated data + 75K Wikipedia")
     print("💾 Checkpoints saved to: checkpoints/training_TIMESTAMP/")
     print("🔄 Resume training by modifying this script to load from checkpoint")
     
     # Load and process all data using the data_loader module
     training_data, validation_data, data_stats = load_and_process_all_data(
         data_dir='data',
-        ultrachat_samples=15000,  # 15K UltraChat conversations (reduced from 50K)
-        wikipedia_samples=50000,  # 25K Wikipedia articles (reduced from 50K)
+        ultrachat_samples=50000,  # Increased from 15K to 50K UltraChat conversations
+        wikipedia_samples=75000,  # Increased from 25K to 75K Wikipedia articles
         train_split=0.8,
         seed=42
     )
@@ -464,14 +464,14 @@ if __name__ == "__main__":
     sequence_length = 256  # Start with shorter sequences for stable training
     learning_rate = 0.00015 # More conservative LR for improved architecture
     max_grad_norm = 1.0   # Gradient clipping
-    checkpoint_every = 5  # Save checkpoint every 5 epochs
+    checkpoint_every = 1  # Save checkpoint every epoch
     
     print(f"\n⚙️  Training configuration:")
     print(f"Device: {device} ({device_name})")
     print(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
     print(f"Batch configuration: {batch_size} sequences × {sequence_length} tokens = {batch_size * sequence_length:,} tokens per batch")
     print(f"🚀 LONG CONTEXT: Doubled sequence length to {sequence_length} tokens for better conversation understanding")
-    print(f"Checkpoint frequency: Every {checkpoint_every} epochs")
+    print(f"Checkpoint frequency: Every {checkpoint_every} epoch{'s' if checkpoint_every > 1 else ''}")
     print(f"💡 Head dimension: {head_dim} (optimized for efficiency)")
     
     # Check if configuration is reasonable for dataset size

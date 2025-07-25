@@ -629,8 +629,8 @@ def print_wikipedia_samples(wikipedia_data, max_samples=10):
 
 
 def load_and_process_all_data(data_dir='data', 
-                             ultrachat_samples=15000,  # Updated default to 15K
-                             wikipedia_samples=25000,  # Updated default to 25K
+                             ultrachat_samples=50000,  # Updated default to 50K
+                             wikipedia_samples=75000,  # Updated default to 75K
                              generated_data_file="temp_generated_training_data.json",  # Changed to temp file
                              train_split=0.8, 
                              seed=42):
@@ -639,8 +639,8 @@ def load_and_process_all_data(data_dir='data',
     
     Args:
         data_dir (str): Directory containing book*.txt files
-        ultrachat_samples (int): Number of UltraChat conversations to sample (default: 15K)
-        wikipedia_samples (int): Number of Wikipedia articles to sample (default: 25K)
+        ultrachat_samples (int): Number of UltraChat conversations to sample (default: 50K)
+        wikipedia_samples (int): Number of Wikipedia articles to sample (default: 75K)
         generated_data_file (str): Path to generated training data JSON file
         train_split (float): Fraction of data to use for training (rest for validation)
         seed (int): Random seed for reproducible sampling
@@ -673,7 +673,7 @@ def load_and_process_all_data(data_dir='data',
     print("\n💬 Loading UltraChat dataset...")
     ultrachat_data = load_ultrachat_data(
         dataset_name="stingning/ultrachat",
-        num_samples=ultrachat_samples,  # Use the parameter value (now 15K)
+        num_samples=ultrachat_samples,  # Use the parameter value (now 50K)
         seed=seed
     )
     
@@ -710,7 +710,7 @@ def load_and_process_all_data(data_dir='data',
     wikipedia_data = load_wikipedia_data(
         dataset_name="wikimedia/wikipedia",
         subset="20231101.en",
-        num_samples=wikipedia_samples, # Use the parameter value (now 25K)
+        num_samples=wikipedia_samples, # Use the parameter value (now 75K)
         seed=seed
     )
     
