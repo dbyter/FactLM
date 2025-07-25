@@ -630,7 +630,7 @@ def print_wikipedia_samples(wikipedia_data, max_samples=10):
 
 def load_and_process_all_data(data_dir='data', 
                              ultrachat_samples=75000,  # Updated default to 75K
-                             wikipedia_samples=125000,  # Updated default to 125K
+                             wikipedia_samples=200000,  # Updated default to 200K
                              generated_data_file="temp_generated_training_data.json",  # Changed to temp file
                              train_split=0.8, 
                              seed=42):
@@ -640,7 +640,7 @@ def load_and_process_all_data(data_dir='data',
     Args:
         data_dir (str): Directory containing book*.txt files
         ultrachat_samples (int): Number of UltraChat conversations to sample (default: 75K)
-        wikipedia_samples (int): Number of Wikipedia articles to sample (default: 125K)
+        wikipedia_samples (int): Number of Wikipedia articles to sample (default: 200K)
         generated_data_file (str): Path to generated training data JSON file
         train_split (float): Fraction of data to use for training (rest for validation)
         seed (int): Random seed for reproducible sampling
@@ -710,7 +710,7 @@ def load_and_process_all_data(data_dir='data',
     wikipedia_data = load_wikipedia_data(
         dataset_name="wikimedia/wikipedia",
         subset="20231101.en",
-        num_samples=wikipedia_samples, # Use the parameter value (now 125K)
+        num_samples=wikipedia_samples, # Use the parameter value (now 200K)
         seed=seed
     )
     
