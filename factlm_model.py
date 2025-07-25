@@ -103,7 +103,14 @@ class FactLM(nn.Module):
         self.embed_dropout = nn.Dropout(dropout)
 
         self.pos_encoder = PositionalEncoding(d_model, max_len)
-        self.encoder_layers = nn.ModuleList([EncoderLayer(d_model, num_heads, dropout) for _ in range(num_layers)])
+
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=d_model,
+            nhead=num_heads,
+            dropout=dropout,
+            batch_first=True  # makes input shape (batch, seq, dim)
+        )
+        self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
         self.fc = nn.Linear(d_model, vocab_size)
         self.fc.weight = self.embedding.weight  # weight tying
 
@@ -117,10 +124,14 @@ class FactLM(nn.Module):
     def forward(self, x):
         x = self.embed_dropout(self.embedding(x))
         x = self.pos_encoder(x)
-        mask = self.generate_mask(x.size(1), x.device)
+        seq_len = x.size(1)
+        mask = self.generate_mask(seq_len, x.device)
+        # PyTorch expects the mask as float with -inf where masked
+        attn_mask = mask.masked_fill(~mask, float('-inf')).masked_fill(mask, float(0.0))
 
-        for layer in self.encoder_layers:
-            x = layer(x, mask)
+        # batch_first=True, so x shape is (batch, seq_len, d_model)
+        x = self.encoder(x, mask=attn_mask)
+
         x = self.fc(x)
         # Remove log_softmax to return raw logits for better generation flexibility
         return x

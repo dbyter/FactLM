@@ -390,7 +390,7 @@ if __name__ == "__main__":
     training_data, validation_data, data_stats = load_and_process_all_data(
         data_dir='data',
         ultrachat_samples=15000,  # 15K UltraChat conversations (reduced from 50K)
-        wikipedia_samples=25000,  # 25K Wikipedia articles (reduced from 50K)
+        wikipedia_samples=50000,  # 25K Wikipedia articles (reduced from 50K)
         train_split=0.8,
         seed=42
     )
