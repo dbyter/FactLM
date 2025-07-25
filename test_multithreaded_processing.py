@@ -16,12 +16,13 @@ def test_multithreaded_processing():
     print("🔬 Testing Multithreaded Wikipedia Processing")
     print("=" * 60)
     
-    # Test configurations
+    # Test configurations - using larger samples to better reflect 1M article processing
     test_configs = [
-        {"workers": 1, "samples": 5000, "description": "Single-threaded baseline"},
-        {"workers": 2, "samples": 5000, "description": "2 threads"},
-        {"workers": 4, "samples": 5000, "description": "4 threads (default)"},
-        {"workers": 8, "samples": 5000, "description": "8 threads"},
+        {"workers": 1, "samples": 10000, "description": "Single-threaded baseline"},
+        {"workers": 2, "samples": 10000, "description": "2 threads"},
+        {"workers": 4, "samples": 10000, "description": "4 threads (default)"},
+        {"workers": 8, "samples": 10000, "description": "8 threads"},
+        {"workers": 12, "samples": 10000, "description": "12 threads (high-end)"},
     ]
     
     results = []
@@ -146,6 +147,8 @@ if __name__ == "__main__":
     print("🚀 FactLM Multithreaded Processing Test")
     print("This script will test Wikipedia processing performance with different thread counts.")
     print("Note: This will download Wikipedia data if not already cached.")
+    print("📊 Current default: 1M Wikipedia articles (estimated 10-30 minutes to process)")
+    print("🧪 Test uses 10K articles per configuration for faster benchmarking")
     
     # Ask user if they want to proceed
     response = input("\nProceed with performance test? (y/N): ").strip().lower()

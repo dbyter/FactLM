@@ -639,8 +639,11 @@ def process_wikipedia_articles(wikipedia_data, tokenizer, max_workers=4):
                 
                 with progress_lock:
                     processed_articles += 1
-                    if processed_articles % 5000 == 0:
-                        print(f"  Processed {processed_articles:,} articles...")
+                    # More frequent progress updates for large datasets
+                    progress_interval = 10000 if len(articles_list) > 500000 else 5000
+                    if processed_articles % progress_interval == 0:
+                        percentage = (processed_articles / len(articles_list)) * 100
+                        print(f"  Processed {processed_articles:,} articles... ({percentage:.1f}% complete)")
                         
             except Exception as e:
                 print(f"⚠️  Error processing article: {e}")
@@ -670,8 +673,10 @@ def process_wikipedia_articles(wikipedia_data, tokenizer, max_workers=4):
         
         # Progress update for tokenization
         tokenized_so_far = min(i + tokenization_batch_size, len(formatted_texts))
-        if tokenized_so_far % 5000 == 0:
-            print(f"  Tokenized {tokenized_so_far:,} articles...")
+        progress_interval = 10000 if len(formatted_texts) > 500000 else 5000
+        if tokenized_so_far % progress_interval == 0:
+            percentage = (tokenized_so_far / len(formatted_texts)) * 100
+            print(f"  Tokenized {tokenized_so_far:,} articles... ({percentage:.1f}% complete)")
     
     print(f"✅ Processed {len(formatted_texts):,} Wikipedia articles into {len(all_tokens):,} tokens")
     
@@ -960,7 +965,7 @@ def print_wikipedia_samples(wikipedia_data, max_samples=10):
 
 def load_and_process_all_data(data_dir='data', 
                              ultrachat_samples=0,  # Updated default to 0 (disabled)
-                             wikipedia_samples=300000,  # Updated default to 300K
+                             wikipedia_samples=1000000,  # Updated default to 1M
                              generated_data_file=None,  # Updated default to None (disabled)
                              train_split=0.8, 
                              seed=42,
@@ -971,20 +976,25 @@ def load_and_process_all_data(data_dir='data',
     Args:
         data_dir (str): Directory containing book*.txt files
         ultrachat_samples (int): Number of UltraChat conversations to sample (default: 0 - disabled)
-        wikipedia_samples (int): Number of Wikipedia articles to sample (default: 300K)
+        wikipedia_samples (int): Number of Wikipedia articles to sample (default: 1M)
         generated_data_file (str): Path to generated training data JSON file (default: None - disabled)
         train_split (float): Fraction of data to use for training (rest for validation)
         seed (int): Random seed for reproducible sampling
-        max_workers (int): Number of threads for Wikipedia processing (default: 4)
+        max_workers (int): Number of threads for Wikipedia processing (default: 4, increase for faster processing)
     
     Returns:
         tuple: (train_data, val_data, data_stats) where data_stats contains metadata
+    
+    Note:
+        Processing 1M Wikipedia articles will take significant time and memory.
+        Consider using max_workers=8 or higher for faster processing on multi-core systems.
     """
     from transformers import AutoTokenizer
     
     print("🔄 Starting data loading pipeline (BOOKS + WIKIPEDIA)...")
     print("   📚 UltraChat and Generated data disabled for focused factual training")
     print(f"   🚀 Using {max_workers} threads for parallel processing (adjust max_workers parameter to tune performance)")
+    print(f"   📊 Processing {wikipedia_samples:,} Wikipedia articles (this may take 10-30 minutes depending on your system)")
     
     # Load tokenizer
     print("\n🔤 Loading tokenizer...")
@@ -1051,7 +1061,7 @@ def load_and_process_all_data(data_dir='data',
     wikipedia_data = load_wikipedia_data(
         dataset_name="wikimedia/wikipedia",
         subset="20231101.en",
-        num_samples=wikipedia_samples, # Use the parameter value (now 300K)
+        num_samples=wikipedia_samples, # Use the parameter value (now 1M)
         seed=seed
     )
     
@@ -1118,3 +1128,86 @@ def load_and_process_all_data(data_dir='data',
         print(f"   Looking for file: {generated_data_file}")
     
     return train_data, val_data, data_stats 
+
+
+def estimate_processing_time(wikipedia_samples=1000000, max_workers=4):
+    """
+    Estimate processing time for Wikipedia articles based on sample size and worker count
+    
+    Args:
+        wikipedia_samples (int): Number of Wikipedia articles to process
+        max_workers (int): Number of worker threads
+    
+    Returns:
+        dict: Estimated times for different processing phases
+    """
+    import os
+    
+    # Base processing rates (articles per second) - these are rough estimates
+    # Based on typical performance on modern systems
+    base_download_rate = 2000  # articles/second for downloading
+    base_processing_rate = 300  # articles/second for single-threaded processing
+    base_tokenization_rate = 500  # articles/second for tokenization
+    
+    # Adjust for worker count (with diminishing returns)
+    worker_efficiency = min(max_workers, os.cpu_count() or 4)
+    if worker_efficiency > 4:
+        # Efficiency drops off after 4 workers due to I/O bottlenecks
+        worker_efficiency = 4 + (worker_efficiency - 4) * 0.5
+    
+    processing_rate = base_processing_rate * worker_efficiency
+    tokenization_rate = base_tokenization_rate * worker_efficiency
+    
+    # Calculate estimated times
+    download_time = wikipedia_samples / base_download_rate
+    processing_time = wikipedia_samples / processing_rate  
+    tokenization_time = wikipedia_samples / tokenization_rate
+    total_time = download_time + processing_time + tokenization_time
+    
+    return {
+        'samples': wikipedia_samples,
+        'workers': max_workers,
+        'effective_workers': worker_efficiency,
+        'download_minutes': download_time / 60,
+        'processing_minutes': processing_time / 60,
+        'tokenization_minutes': tokenization_time / 60,
+        'total_minutes': total_time / 60,
+        'total_hours': total_time / 3600
+    }
+
+
+def print_processing_estimates():
+    """Print processing time estimates for common configurations"""
+    print("⏱️  Wikipedia Processing Time Estimates")
+    print("=" * 60)
+    
+    configs = [
+        (100000, 4, "100K articles, 4 workers (quick test)"),
+        (300000, 4, "300K articles, 4 workers (medium dataset)"),  
+        (1000000, 4, "1M articles, 4 workers (default)"),
+        (1000000, 8, "1M articles, 8 workers (fast)"),
+        (1000000, 12, "1M articles, 12 workers (very fast)"),
+    ]
+    
+    print(f"{'Configuration':<35} {'Download':<10} {'Process':<10} {'Tokenize':<10} {'Total':<10}")
+    print("-" * 75)
+    
+    for samples, workers, description in configs:
+        est = estimate_processing_time(samples, workers)
+        
+        download_str = f"{est['download_minutes']:.1f}m"
+        process_str = f"{est['processing_minutes']:.1f}m" 
+        tokenize_str = f"{est['tokenization_minutes']:.1f}m"
+        
+        if est['total_hours'] >= 1:
+            total_str = f"{est['total_hours']:.1f}h"
+        else:
+            total_str = f"{est['total_minutes']:.1f}m"
+            
+        print(f"{description:<35} {download_str:<10} {process_str:<10} {tokenize_str:<10} {total_str:<10}")
+    
+    print(f"\nNote: Times are rough estimates and will vary based on:")
+    print(f"  - Internet connection speed (for download)")
+    print(f"  - CPU performance and memory")
+    print(f"  - System load and available resources")
+    print(f"  - Article length and complexity")
