@@ -997,11 +997,11 @@ def tokenize_text_data_batch(text_data, tokenizer, batch_size=1000):
 
 
 def process_generated_conversations_fast(generated_data, tokenizer, max_workers=20, batch_size=500):
-    """Ultra-fast generated conversations processing using batched tokenization"""
+    """Ultra-fast generated conversations processing using true multi-threading"""
     if generated_data is None:
         return []
     
-    print(f"Processing {len(generated_data):,} generated conversations with ultra-fast batched tokenization...")
+    print(f"Processing {len(generated_data):,} generated conversations with {max_workers} threads...")
     
     # Limit generated data to prevent overfitting
     max_generated_conversations = min(len(generated_data), 5000)  # Limit to 5K conversations
@@ -1040,59 +1040,73 @@ def process_generated_conversations_fast(generated_data, tokenizer, max_workers=
     
     print(f"✅ Formatted {len(formatted_conversations):,} generated conversations")
     
-    # Process in batches
+    # Process conversations in parallel using ThreadPoolExecutor
     all_tokens = []
     processed_conversations = 0
+    progress_lock = Lock()
     
+    def process_conversation_batch(conversation_batch):
+        """Process a batch of conversations in a single thread"""
+        batch_tokens = []
+        batch_processed = 0
+        
+        for conversation_text in conversation_batch:
+            try:
+                # Tokenize the conversation
+                tokens = tokenizer.encode(conversation_text, add_special_tokens=False)
+                batch_tokens.extend(tokens)
+                # Add EOS token between conversations
+                batch_tokens.append(tokenizer.eos_token_id)
+                batch_processed += 1
+                
+            except Exception as e:
+                print(f"⚠️  Error processing conversation: {e}")
+                continue
+        
+        return batch_tokens, batch_processed
+    
+    # Split conversations into batches for parallel processing
+    conversation_batches = []
     for i in range(0, len(formatted_conversations), batch_size):
         batch = formatted_conversations[i:i + batch_size]
-        
-        try:
-            # Use batch_encode_plus for maximum speed
-            batch_encodings = tokenizer.batch_encode_plus(
-                batch,
-                add_special_tokens=False,
-                padding=False,
-                truncation=False,
-                return_tensors=None,
-                return_attention_mask=False,
-                return_token_type_ids=False
-            )
-            
-            # Process batch results
-            for input_ids in batch_encodings['input_ids']:
-                all_tokens.extend(input_ids)
-                # Add EOS token between conversations
-                all_tokens.append(tokenizer.eos_token_id)
-                processed_conversations += 1
-            
-            # Progress update
-            if processed_conversations % 1000 == 0:
-                print(f"  Processed {processed_conversations:,} conversations...")
-                
-        except Exception as e:
-            print(f"⚠️  Error in batch {i//batch_size}: {e}")
-            # Fallback to individual processing
-            for conversation_text in batch:
-                try:
-                    tokens = tokenizer.encode(conversation_text, add_special_tokens=False)
-                    all_tokens.extend(tokens)
-                    all_tokens.append(tokenizer.eos_token_id)
-                    processed_conversations += 1
-                except Exception as e2:
-                    print(f"⚠️  Error processing conversation: {e2}")
-                    continue
+        conversation_batches.append(batch)
     
-    print(f"✅ Ultra-fast processing complete: {processed_conversations:,} conversations, {len(all_tokens):,} tokens")
+    print(f"🔄 Processing {len(conversation_batches)} batches with {max_workers} threads...")
+    
+    # Process batches in parallel
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        # Submit all batches for processing
+        future_to_batch = {
+            executor.submit(process_conversation_batch, batch): i 
+            for i, batch in enumerate(conversation_batches)
+        }
+        
+        # Collect results as they complete
+        for future in as_completed(future_to_batch):
+            try:
+                batch_tokens, batch_processed = future.result()
+                all_tokens.extend(batch_tokens)
+                
+                with progress_lock:
+                    processed_conversations += batch_processed
+                    # Progress update
+                    if processed_conversations % 1000 == 0:
+                        print(f"  Processed {processed_conversations:,} conversations...")
+                        
+            except Exception as e:
+                print(f"⚠️  Error in batch processing: {e}")
+                continue
+    
+    print(f"✅ Multi-threaded processing complete: {processed_conversations:,} conversations, {len(all_tokens):,} tokens")
     return all_tokens
 
 
 def process_wikipedia_articles_fast(wikipedia_data, tokenizer, max_workers=20, batch_size=500):
-    """Ultra-fast Wikipedia processing using batched tokenization"""
+    """Ultra-fast Wikipedia processing using true multi-threading"""
     if wikipedia_data is None:
         return []
     
-    print(f"Processing {len(wikipedia_data):,} Wikipedia articles with ultra-fast batched tokenization...")
+    print(f"Processing {len(wikipedia_data):,} Wikipedia articles with {max_workers} threads...")
     
     # Convert to list and filter articles
     articles_list = []
@@ -1103,59 +1117,73 @@ def process_wikipedia_articles_fast(wikipedia_data, tokenizer, max_workers=20, b
     
     print(f"✅ Filtered to {len(articles_list):,} valid articles")
     
-    # Process in large batches for maximum speed
+    # Process articles in parallel using ThreadPoolExecutor
     all_tokens = []
     processed_articles = 0
+    progress_lock = Lock()
     
+    def process_article_batch(article_batch):
+        """Process a batch of articles in a single thread"""
+        batch_tokens = []
+        batch_processed = 0
+        
+        for article_text in article_batch:
+            try:
+                # Tokenize the article
+                tokens = tokenizer.encode(article_text, add_special_tokens=False)
+                batch_tokens.extend(tokens)
+                # Add EOS token between articles
+                batch_tokens.append(tokenizer.eos_token_id)
+                batch_processed += 1
+                
+            except Exception as e:
+                print(f"⚠️  Error processing article: {e}")
+                continue
+        
+        return batch_tokens, batch_processed
+    
+    # Split articles into batches for parallel processing
+    article_batches = []
     for i in range(0, len(articles_list), batch_size):
         batch = articles_list[i:i + batch_size]
-        
-        try:
-            # Use batch_encode_plus for maximum speed
-            batch_encodings = tokenizer.batch_encode_plus(
-                batch,
-                add_special_tokens=False,
-                padding=False,
-                truncation=False,
-                return_tensors=None,
-                return_attention_mask=False,
-                return_token_type_ids=False
-            )
-            
-            # Process batch results
-            for input_ids in batch_encodings['input_ids']:
-                all_tokens.extend(input_ids)
-                # Add EOS token between articles
-                all_tokens.append(tokenizer.eos_token_id)
-                processed_articles += 1
-            
-            # Progress update
-            if processed_articles % 10000 == 0:
-                print(f"  Processed {processed_articles:,} articles...")
-                
-        except Exception as e:
-            print(f"⚠️  Error in batch {i//batch_size}: {e}")
-            # Fallback to individual processing
-            for article_text in batch:
-                try:
-                    tokens = tokenizer.encode(article_text, add_special_tokens=False)
-                    all_tokens.extend(tokens)
-                    all_tokens.append(tokenizer.eos_token_id)
-                    processed_articles += 1
-                except Exception as e2:
-                    print(f"⚠️  Error processing article: {e2}")
-                    continue
+        article_batches.append(batch)
     
-    print(f"✅ Ultra-fast processing complete: {processed_articles:,} articles, {len(all_tokens):,} tokens")
+    print(f"🔄 Processing {len(article_batches)} batches with {max_workers} threads...")
+    
+    # Process batches in parallel
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        # Submit all batches for processing
+        future_to_batch = {
+            executor.submit(process_article_batch, batch): i 
+            for i, batch in enumerate(article_batches)
+        }
+        
+        # Collect results as they complete
+        for future in as_completed(future_to_batch):
+            try:
+                batch_tokens, batch_processed = future.result()
+                all_tokens.extend(batch_tokens)
+                
+                with progress_lock:
+                    processed_articles += batch_processed
+                    # Progress update
+                    if processed_articles % 10000 == 0:
+                        print(f"  Processed {processed_articles:,} articles...")
+                        
+            except Exception as e:
+                print(f"⚠️  Error in batch processing: {e}")
+                continue
+    
+    print(f"✅ Multi-threaded processing complete: {processed_articles:,} articles, {len(all_tokens):,} tokens")
     return all_tokens
 
 
 def process_ultrachat_conversations_fast(ultrachat_data, tokenizer, max_workers=20, batch_size=500):
-    """Ultra-fast UltraChat processing using batched tokenization"""
+    """Ultra-fast UltraChat processing using true multi-threading"""
     if ultrachat_data is None:
         return []
     
-    print(f"Processing {len(ultrachat_data):,} UltraChat conversations with ultra-fast batched tokenization...")
+    print(f"Processing {len(ultrachat_data):,} UltraChat conversations with {max_workers} threads...")
     
     # Format conversations first
     formatted_conversations = []
@@ -1185,50 +1213,64 @@ def process_ultrachat_conversations_fast(ultrachat_data, tokenizer, max_workers=
     
     print(f"✅ Formatted {len(formatted_conversations):,} conversations")
     
-    # Process in batches
+    # Process conversations in parallel using ThreadPoolExecutor
     all_tokens = []
     processed_conversations = 0
+    progress_lock = Lock()
     
+    def process_conversation_batch(conversation_batch):
+        """Process a batch of conversations in a single thread"""
+        batch_tokens = []
+        batch_processed = 0
+        
+        for conversation_text in conversation_batch:
+            try:
+                # Tokenize the conversation
+                tokens = tokenizer.encode(conversation_text, add_special_tokens=False)
+                batch_tokens.extend(tokens)
+                # Add EOS token between conversations
+                batch_tokens.append(tokenizer.eos_token_id)
+                batch_processed += 1
+                
+            except Exception as e:
+                print(f"⚠️  Error processing conversation: {e}")
+                continue
+        
+        return batch_tokens, batch_processed
+    
+    # Split conversations into batches for parallel processing
+    conversation_batches = []
     for i in range(0, len(formatted_conversations), batch_size):
         batch = formatted_conversations[i:i + batch_size]
-        
-        try:
-            # Use batch_encode_plus for maximum speed
-            batch_encodings = tokenizer.batch_encode_plus(
-                batch,
-                add_special_tokens=False,
-                padding=False,
-                truncation=False,
-                return_tensors=None,
-                return_attention_mask=False,
-                return_token_type_ids=False
-            )
-            
-            # Process batch results
-            for input_ids in batch_encodings['input_ids']:
-                all_tokens.extend(input_ids)
-                # Add EOS token between conversations
-                all_tokens.append(tokenizer.eos_token_id)
-                processed_conversations += 1
-            
-            # Progress update
-            if processed_conversations % 5000 == 0:
-                print(f"  Processed {processed_conversations:,} conversations...")
-                
-        except Exception as e:
-            print(f"⚠️  Error in batch {i//batch_size}: {e}")
-            # Fallback to individual processing
-            for conversation_text in batch:
-                try:
-                    tokens = tokenizer.encode(conversation_text, add_special_tokens=False)
-                    all_tokens.extend(tokens)
-                    all_tokens.append(tokenizer.eos_token_id)
-                    processed_conversations += 1
-                except Exception as e2:
-                    print(f"⚠️  Error processing conversation: {e2}")
-                    continue
+        conversation_batches.append(batch)
     
-    print(f"✅ Ultra-fast processing complete: {processed_conversations:,} conversations, {len(all_tokens):,} tokens")
+    print(f"🔄 Processing {len(conversation_batches)} batches with {max_workers} threads...")
+    
+    # Process batches in parallel
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        # Submit all batches for processing
+        future_to_batch = {
+            executor.submit(process_conversation_batch, batch): i 
+            for i, batch in enumerate(conversation_batches)
+        }
+        
+        # Collect results as they complete
+        for future in as_completed(future_to_batch):
+            try:
+                batch_tokens, batch_processed = future.result()
+                all_tokens.extend(batch_tokens)
+                
+                with progress_lock:
+                    processed_conversations += batch_processed
+                    # Progress update
+                    if processed_conversations % 5000 == 0:
+                        print(f"  Processed {processed_conversations:,} conversations...")
+                        
+            except Exception as e:
+                print(f"⚠️  Error in batch processing: {e}")
+                continue
+    
+    print(f"✅ Multi-threaded processing complete: {processed_conversations:,} conversations, {len(all_tokens):,} tokens")
     return all_tokens
 
 
