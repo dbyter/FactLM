@@ -847,6 +847,391 @@ def tokenize_text_data(text_data, tokenizer):
     return all_tokens
 
 
+def tokenize_text_data_fast(text_data, tokenizer, batch_size=1000, max_workers=20):
+    """Fast tokenization using batching and parallel processing
+    
+    Args:
+        text_data (str): Raw text to tokenize
+        tokenizer: Tokenizer instance (e.g., from transformers)
+        batch_size (int): Number of text chunks to tokenize in parallel
+        max_workers (int): Number of worker threads for parallel processing
+    
+    Returns:
+        list: List of token IDs
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    import re
+    
+    # For small texts, tokenize directly
+    if len(text_data) <= 100000:  # ~100K characters or less
+        return tokenizer.encode(text_data, add_special_tokens=False)
+    
+    print(f"   Large text detected ({len(text_data):,} chars), using fast parallel tokenization...")
+    
+    # Split text into chunks for parallel processing
+    chunk_size = 50000  # Characters per chunk
+    text_chunks = []
+    
+    for i in range(0, len(text_data), chunk_size):
+        chunk = text_data[i:i + chunk_size]
+        # Find a good break point (sentence boundary)
+        if i + chunk_size < len(text_data):
+            # Look for sentence ending in the last 1000 chars
+            search_start = max(0, len(chunk) - 1000)
+            search_text = chunk[search_start:]
+            last_period = max(search_text.rfind('.'), search_text.rfind('!'), search_text.rfind('?'))
+            if last_period > 0:
+                chunk = chunk[:search_start + last_period + 1]
+        text_chunks.append(chunk.strip())
+    
+    print(f"   Split into {len(text_chunks)} chunks for parallel processing")
+    
+    def tokenize_chunk(chunk):
+        """Tokenize a single text chunk"""
+        try:
+            return tokenizer.encode(chunk, add_special_tokens=False)
+        except Exception as e:
+            print(f"⚠️  Error tokenizing chunk: {e}")
+            return []
+    
+    # Process chunks in parallel batches
+    all_tokens = []
+    processed_chunks = 0
+    
+    for i in range(0, len(text_chunks), batch_size):
+        batch = text_chunks[i:i + batch_size]
+        
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            # Submit all chunks in this batch
+            future_to_chunk = {
+                executor.submit(tokenize_chunk, chunk): j 
+                for j, chunk in enumerate(batch)
+            }
+            
+            # Collect results as they complete
+            batch_tokens = []
+            for future in as_completed(future_to_chunk):
+                try:
+                    chunk_tokens = future.result()
+                    batch_tokens.extend(chunk_tokens)
+                    processed_chunks += 1
+                except Exception as e:
+                    print(f"⚠️  Error in batch processing: {e}")
+                    continue
+        
+        all_tokens.extend(batch_tokens)
+        
+        # Progress update
+        if processed_chunks % 10 == 0:
+            print(f"   Processed {processed_chunks}/{len(text_chunks)} chunks...")
+    
+    print(f"   ✅ Fast tokenization complete: {len(all_tokens):,} tokens")
+    return all_tokens
+
+
+def tokenize_text_data_batch(text_data, tokenizer, batch_size=1000):
+    """Ultra-fast tokenization using native batch processing
+    
+    Args:
+        text_data (str): Raw text to tokenize
+        tokenizer: Tokenizer instance (e.g., from transformers)
+        batch_size (int): Number of text pieces to tokenize in one batch
+    
+    Returns:
+        list: List of token IDs
+    """
+    # For small texts, tokenize directly
+    if len(text_data) <= 100000:
+        return tokenizer.encode(text_data, add_special_tokens=False)
+    
+    print(f"   Large text detected ({len(text_data):,} chars), using ultra-fast batch tokenization...")
+    
+    # Split into sentences for better batching
+    import re
+    sentences = re.split(r'(?<=[.!?])\s+', text_data)
+    
+    # Filter out very short sentences
+    sentences = [s.strip() for s in sentences if len(s.strip()) > 10]
+    
+    print(f"   Processing {len(sentences):,} sentences in batches of {batch_size}")
+    
+    all_tokens = []
+    
+    # Process in batches using tokenizer's native batch processing
+    for i in range(0, len(sentences), batch_size):
+        batch = sentences[i:i + batch_size]
+        
+        try:
+            # Use tokenizer's batch_encode_plus for maximum speed
+            batch_encodings = tokenizer.batch_encode_plus(
+                batch,
+                add_special_tokens=False,
+                padding=False,  # No padding for training data
+                truncation=False,  # No truncation
+                return_tensors=None,  # Return lists, not tensors
+                return_attention_mask=False,  # Don't need attention masks
+                return_token_type_ids=False  # Don't need token type IDs
+            )
+            
+            # Extract token IDs from batch
+            for input_ids in batch_encodings['input_ids']:
+                all_tokens.extend(input_ids)
+            
+            # Progress update
+            if (i + batch_size) % (batch_size * 10) == 0:
+                print(f"   Processed {min(i + batch_size, len(sentences)):,}/{len(sentences):,} sentences...")
+                
+        except Exception as e:
+            print(f"⚠️  Error in batch {i//batch_size}: {e}")
+            # Fallback to individual tokenization for this batch
+            for sentence in batch:
+                try:
+                    tokens = tokenizer.encode(sentence, add_special_tokens=False)
+                    all_tokens.extend(tokens)
+                except Exception as e2:
+                    print(f"⚠️  Error tokenizing sentence: {e2}")
+                    continue
+    
+    print(f"   ✅ Ultra-fast batch tokenization complete: {len(all_tokens):,} tokens")
+    return all_tokens
+
+
+def process_generated_conversations_fast(generated_data, tokenizer, max_workers=20, batch_size=500):
+    """Ultra-fast generated conversations processing using batched tokenization"""
+    if generated_data is None:
+        return []
+    
+    print(f"Processing {len(generated_data):,} generated conversations with ultra-fast batched tokenization...")
+    
+    # Limit generated data to prevent overfitting
+    max_generated_conversations = min(len(generated_data), 5000)  # Limit to 5K conversations
+    if len(generated_data) > max_generated_conversations:
+        print(f"   Limiting generated data to {max_generated_conversations:,} conversations to prevent overfitting")
+        generated_data = generated_data[:max_generated_conversations]
+    
+    # Format conversations first
+    formatted_conversations = []
+    for example in generated_data:
+        try:
+            conversation = example.get('data', [])
+            if not conversation or len(conversation) != 2:
+                continue
+            
+            # Format conversation - use raw text without Human/Assistant prefixes
+            prompt, response = conversation[0], conversation[1]
+            
+            # Check for potential issues in the data
+            if len(prompt) < 10 or len(response) < 10:
+                continue  # Skip very short conversations
+            
+            # Check for repetitive patterns in the response
+            words = response.split()
+            if len(words) > 3:
+                # Check if response is just repeating the same word
+                unique_words = set(words)
+                if len(unique_words) / len(words) < 0.3:  # Too repetitive
+                    continue
+            
+            conversation_text = f"{prompt}\n\n{response}\n\n<|endofconversation|>\n\n"
+            formatted_conversations.append(conversation_text)
+            
+        except Exception as e:
+            continue
+    
+    print(f"✅ Formatted {len(formatted_conversations):,} generated conversations")
+    
+    # Process in batches
+    all_tokens = []
+    processed_conversations = 0
+    
+    for i in range(0, len(formatted_conversations), batch_size):
+        batch = formatted_conversations[i:i + batch_size]
+        
+        try:
+            # Use batch_encode_plus for maximum speed
+            batch_encodings = tokenizer.batch_encode_plus(
+                batch,
+                add_special_tokens=False,
+                padding=False,
+                truncation=False,
+                return_tensors=None,
+                return_attention_mask=False,
+                return_token_type_ids=False
+            )
+            
+            # Process batch results
+            for input_ids in batch_encodings['input_ids']:
+                all_tokens.extend(input_ids)
+                # Add EOS token between conversations
+                all_tokens.append(tokenizer.eos_token_id)
+                processed_conversations += 1
+            
+            # Progress update
+            if processed_conversations % 1000 == 0:
+                print(f"  Processed {processed_conversations:,} conversations...")
+                
+        except Exception as e:
+            print(f"⚠️  Error in batch {i//batch_size}: {e}")
+            # Fallback to individual processing
+            for conversation_text in batch:
+                try:
+                    tokens = tokenizer.encode(conversation_text, add_special_tokens=False)
+                    all_tokens.extend(tokens)
+                    all_tokens.append(tokenizer.eos_token_id)
+                    processed_conversations += 1
+                except Exception as e2:
+                    print(f"⚠️  Error processing conversation: {e2}")
+                    continue
+    
+    print(f"✅ Ultra-fast processing complete: {processed_conversations:,} conversations, {len(all_tokens):,} tokens")
+    return all_tokens
+
+
+def process_wikipedia_articles_fast(wikipedia_data, tokenizer, max_workers=20, batch_size=500):
+    """Ultra-fast Wikipedia processing using batched tokenization"""
+    if wikipedia_data is None:
+        return []
+    
+    print(f"Processing {len(wikipedia_data):,} Wikipedia articles with ultra-fast batched tokenization...")
+    
+    # Convert to list and filter articles
+    articles_list = []
+    for article in wikipedia_data:
+        text = article.get('text', '')
+        if text and len(text.strip()) > 100:
+            articles_list.append(text.strip())
+    
+    print(f"✅ Filtered to {len(articles_list):,} valid articles")
+    
+    # Process in large batches for maximum speed
+    all_tokens = []
+    processed_articles = 0
+    
+    for i in range(0, len(articles_list), batch_size):
+        batch = articles_list[i:i + batch_size]
+        
+        try:
+            # Use batch_encode_plus for maximum speed
+            batch_encodings = tokenizer.batch_encode_plus(
+                batch,
+                add_special_tokens=False,
+                padding=False,
+                truncation=False,
+                return_tensors=None,
+                return_attention_mask=False,
+                return_token_type_ids=False
+            )
+            
+            # Process batch results
+            for input_ids in batch_encodings['input_ids']:
+                all_tokens.extend(input_ids)
+                # Add EOS token between articles
+                all_tokens.append(tokenizer.eos_token_id)
+                processed_articles += 1
+            
+            # Progress update
+            if processed_articles % 10000 == 0:
+                print(f"  Processed {processed_articles:,} articles...")
+                
+        except Exception as e:
+            print(f"⚠️  Error in batch {i//batch_size}: {e}")
+            # Fallback to individual processing
+            for article_text in batch:
+                try:
+                    tokens = tokenizer.encode(article_text, add_special_tokens=False)
+                    all_tokens.extend(tokens)
+                    all_tokens.append(tokenizer.eos_token_id)
+                    processed_articles += 1
+                except Exception as e2:
+                    print(f"⚠️  Error processing article: {e2}")
+                    continue
+    
+    print(f"✅ Ultra-fast processing complete: {processed_articles:,} articles, {len(all_tokens):,} tokens")
+    return all_tokens
+
+
+def process_ultrachat_conversations_fast(ultrachat_data, tokenizer, max_workers=20, batch_size=500):
+    """Ultra-fast UltraChat processing using batched tokenization"""
+    if ultrachat_data is None:
+        return []
+    
+    print(f"Processing {len(ultrachat_data):,} UltraChat conversations with ultra-fast batched tokenization...")
+    
+    # Format conversations first
+    formatted_conversations = []
+    for example in ultrachat_data:
+        try:
+            conversation = example.get('data', [])
+            if not conversation or len(conversation) < 2:
+                continue
+            
+            # Format conversation
+            conversation_text = ""
+            for i, message in enumerate(conversation):
+                if i == 0:
+                    conversation_text += f"Human: {message}\n\n"
+                elif i == 1:
+                    conversation_text += f"Assistant: {message}\n\n"
+                elif i % 2 == 0:
+                    conversation_text += f"Human: {message}\n\n"
+                else:
+                    conversation_text += f"Assistant: {message}\n\n"
+            
+            conversation_text += "<|endofconversation|>\n\n"
+            formatted_conversations.append(conversation_text)
+            
+        except Exception as e:
+            continue
+    
+    print(f"✅ Formatted {len(formatted_conversations):,} conversations")
+    
+    # Process in batches
+    all_tokens = []
+    processed_conversations = 0
+    
+    for i in range(0, len(formatted_conversations), batch_size):
+        batch = formatted_conversations[i:i + batch_size]
+        
+        try:
+            # Use batch_encode_plus for maximum speed
+            batch_encodings = tokenizer.batch_encode_plus(
+                batch,
+                add_special_tokens=False,
+                padding=False,
+                truncation=False,
+                return_tensors=None,
+                return_attention_mask=False,
+                return_token_type_ids=False
+            )
+            
+            # Process batch results
+            for input_ids in batch_encodings['input_ids']:
+                all_tokens.extend(input_ids)
+                # Add EOS token between conversations
+                all_tokens.append(tokenizer.eos_token_id)
+                processed_conversations += 1
+            
+            # Progress update
+            if processed_conversations % 5000 == 0:
+                print(f"  Processed {processed_conversations:,} conversations...")
+                
+        except Exception as e:
+            print(f"⚠️  Error in batch {i//batch_size}: {e}")
+            # Fallback to individual processing
+            for conversation_text in batch:
+                try:
+                    tokens = tokenizer.encode(conversation_text, add_special_tokens=False)
+                    all_tokens.extend(tokens)
+                    all_tokens.append(tokenizer.eos_token_id)
+                    processed_conversations += 1
+                except Exception as e2:
+                    print(f"⚠️  Error processing conversation: {e2}")
+                    continue
+    
+    print(f"✅ Ultra-fast processing complete: {processed_conversations:,} conversations, {len(all_tokens):,} tokens")
+    return all_tokens
+
+
 def print_data_samples(data_type, samples, tokenizer, max_samples=10):
     """Print samples from different data sources for inspection"""
     print(f"\n📋 Sample {data_type} data:")
@@ -969,7 +1354,7 @@ def load_and_process_all_data(data_dir='data',
                              generated_data_file=None,  # Updated default to None (disabled)
                              train_split=0.8, 
                              seed=42,
-                             max_workers=4):  # Number of threads for Wikipedia processing
+                             max_workers=20):  # Number of threads for Wikipedia processing
     """
     Complete data loading pipeline - loads books, UltraChat, generated data, and Wikipedia, processes and combines them
     
@@ -993,8 +1378,8 @@ def load_and_process_all_data(data_dir='data',
     
     print("🔄 Starting data loading pipeline (BOOKS + WIKIPEDIA)...")
     print("   📚 UltraChat and Generated data disabled for focused factual training")
-    print(f"   🚀 Using {max_workers} threads for parallel processing (adjust max_workers parameter to tune performance)")
-    print(f"   📊 Processing {wikipedia_samples:,} Wikipedia articles (this may take 20-40 minutes depending on your system)")
+    print(f"   🚀 Using {max_workers} threads for ultra-fast parallel processing")
+    print(f"   📊 Processing {wikipedia_samples:,} Wikipedia articles (this may take 5-15 minutes with {max_workers} workers)")
     
     # Load tokenizer
     print("\n🔤 Loading tokenizer...")
@@ -1011,7 +1396,7 @@ def load_and_process_all_data(data_dir='data',
     
     # Process book data into tokens
     print("\n📖 Tokenizing book data...")
-    book_tokens = tokenize_text_data(book_text, tokenizer)
+    book_tokens = tokenize_text_data_batch(book_text, tokenizer, batch_size=1000)
     
     # Load UltraChat data
     ultrachat_tokens = []
@@ -1029,8 +1414,8 @@ def load_and_process_all_data(data_dir='data',
         
         # Process UltraChat conversations
         if ultrachat_data is not None:
-            print(f"\n🔄 Processing UltraChat conversations with {max_workers} threads...")
-            ultrachat_tokens = process_ultrachat_conversations(ultrachat_data, tokenizer, max_workers=max_workers)
+            print(f"\n🔄 Processing UltraChat conversations with ultra-fast batching...")
+            ultrachat_tokens = process_ultrachat_conversations_fast(ultrachat_data, tokenizer, max_workers=max_workers, batch_size=500)
         else:
             print("⚠️  Skipping UltraChat data due to loading error")
     else:
@@ -1048,8 +1433,8 @@ def load_and_process_all_data(data_dir='data',
             print_conversation_samples("Generated", generated_data, max_samples=10)
         
         if generated_data is not None:
-            print(f"\n🔄 Processing generated conversations with {max_workers} threads...")
-            generated_tokens = process_generated_conversations(generated_data, tokenizer, max_workers=max_workers)
+            print(f"\n🔄 Processing generated conversations with ultra-fast batching...")
+            generated_tokens = process_generated_conversations_fast(generated_data, tokenizer, max_workers=max_workers, batch_size=500)
         else:
             print("⚠️  No generated training data found - continuing without it")
     else:
@@ -1072,8 +1457,8 @@ def load_and_process_all_data(data_dir='data',
     # Process Wikipedia articles
     wikipedia_tokens = []
     if wikipedia_data is not None:
-        print(f"\n🔄 Processing Wikipedia articles with {max_workers} threads...")
-        wikipedia_tokens = process_wikipedia_articles(wikipedia_data, tokenizer, max_workers=max_workers)
+        print(f"\n🔄 Processing Wikipedia articles with ultra-fast batching...")
+        wikipedia_tokens = process_wikipedia_articles_fast(wikipedia_data, tokenizer, max_workers=max_workers, batch_size=500)
     else:
         print("⚠️  Skipping Wikipedia data due to loading error")
     
@@ -1130,7 +1515,7 @@ def load_and_process_all_data(data_dir='data',
     return train_data, val_data, data_stats 
 
 
-def estimate_processing_time(wikipedia_samples=1000000, max_workers=4):
+def estimate_processing_time(wikipedia_samples=1000000, max_workers=20):
     """
     Estimate processing time for Wikipedia articles based on sample size and worker count
     
@@ -1178,15 +1563,15 @@ def estimate_processing_time(wikipedia_samples=1000000, max_workers=4):
 
 def print_processing_estimates():
     """Print processing time estimates for common configurations"""
-    print("⏱️  Wikipedia Processing Time Estimates")
+    print("⏱️  Wikipedia Processing Time Estimates (20 Workers)")
     print("=" * 60)
     
     configs = [
-        (100000, 4, "100K articles, 4 workers (quick test)"),
-        (300000, 4, "300K articles, 4 workers (medium dataset)"),  
-        (1000000, 4, "1M articles, 4 workers (default)"),
-        (1000000, 8, "1M articles, 8 workers (fast)"),
-        (1000000, 12, "1M articles, 12 workers (very fast)"),
+        (100000, 20, "100K articles, 20 workers (quick test)"),
+        (300000, 20, "300K articles, 20 workers (medium dataset)"),  
+        (1000000, 20, "1M articles, 20 workers (default)"),
+        (2000000, 20, "2M articles, 20 workers (large dataset)"),
+        (5000000, 20, "5M articles, 20 workers (very large dataset)"),
     ]
     
     print(f"{'Configuration':<35} {'Download':<10} {'Process':<10} {'Tokenize':<10} {'Total':<10}")
