@@ -965,7 +965,7 @@ def print_wikipedia_samples(wikipedia_data, max_samples=10):
 
 def load_and_process_all_data(data_dir='data', 
                              ultrachat_samples=0,  # Updated default to 0 (disabled)
-                             wikipedia_samples=1000000,  # Updated default to 1M
+                             wikipedia_samples=2000000,  # Updated default to 2M
                              generated_data_file=None,  # Updated default to None (disabled)
                              train_split=0.8, 
                              seed=42,
@@ -994,7 +994,7 @@ def load_and_process_all_data(data_dir='data',
     print("🔄 Starting data loading pipeline (BOOKS + WIKIPEDIA)...")
     print("   📚 UltraChat and Generated data disabled for focused factual training")
     print(f"   🚀 Using {max_workers} threads for parallel processing (adjust max_workers parameter to tune performance)")
-    print(f"   📊 Processing {wikipedia_samples:,} Wikipedia articles (this may take 10-30 minutes depending on your system)")
+    print(f"   📊 Processing {wikipedia_samples:,} Wikipedia articles (this may take 20-40 minutes depending on your system)")
     
     # Load tokenizer
     print("\n🔤 Loading tokenizer...")

@@ -49,7 +49,7 @@ Generate {questions_per_batch} questions now:"""
                 {"role": "user", "content": prompt}
             ],
             temperature=0.8,  # Higher temperature for more diversity
-            max_tokens=800
+            max_tokens=1000
         )
         
         response_text = response.choices[0].message.content.strip()

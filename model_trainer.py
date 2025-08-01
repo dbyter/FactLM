@@ -441,8 +441,8 @@ def save_model(model, tokenizer, model_config, training_stats, device_name):
 if __name__ == "__main__":
     print("🚀 FactLM Training - Efficient Model with DataLoaders")
     print("=" * 55)
-    print("📝 Features: Optimized model (d_model=256), efficient DataLoaders")
-    print("📈 Dataset: Books + 1M Wikipedia (factual knowledge focus)")
+    print("📝 Features: Optimized model (d_model=512), efficient DataLoaders")
+    print("📈 Dataset: Books + 2M Wikipedia (factual knowledge focus)")
     print("⚡ Performance: Optimized data loading, step-based checkpoints, multithreaded processing")
     print("💾 Checkpoints: Every epoch + every 10,000 steps")
     print("🔄 Resume training by modifying this script to load from checkpoint")
@@ -451,7 +451,7 @@ if __name__ == "__main__":
     training_data, validation_data, data_stats = load_and_process_all_data(
         data_dir='data',
         ultrachat_samples=0,  # Removed UltraChat conversations
-        wikipedia_samples=1000000,  # Use 1M Wikipedia articles (default)
+        wikipedia_samples=2000000,  # Use 2M Wikipedia articles
         generated_data_file=None,  # Remove generated data
         train_split=0.8,
         seed=42,
@@ -473,15 +473,15 @@ if __name__ == "__main__":
     # Smaller, more efficient model configuration
     # NOTE: This configuration must match the defaults in generate_text.py for checkpoint compatibility
     
-    # Option 1: Standard model (256-dim) - good for larger datasets
+    # Option 1: Standard model (512-dim) - doubled size for better performance
     model_config = {
         'vocab_size': tokenizer.vocab_size,
-        'hidden_size': 256,      # Match d_model for efficiency
+        'hidden_size': 512,      # Match d_model for efficiency
         'num_layers': 6,         # Reduced from 12 to lower parameter count
         'dropout': 0.2,          # Standard dropout
-        'd_model': 256,          # Reduced from 512 for efficiency
+        'd_model': 512,          # Doubled from 256 for better performance
         'max_len': 5000,
-        'num_heads': 8           # 8 heads gives 32-dim heads (256/8=32)
+        'num_heads': 8           # 8 heads gives 64-dim heads (512/8=64)
     }
     
     # Option 2: Smaller model (128-dim) - better for smaller datasets to prevent overfitting
@@ -555,7 +555,7 @@ if __name__ == "__main__":
     print(f"Batch configuration: {batch_size} sequences × {sequence_length} tokens = {batch_size * sequence_length:,} tokens per batch")
     print(f"Sequence length: {sequence_length} tokens for stable training")
     print(f"Checkpoint frequency: Every {checkpoint_every} epoch + every 10,000 steps")
-    print(f"💡 Head dimension: {head_dim} (optimized for efficiency)")
+    print(f"💡 Head dimension: {head_dim} (doubled for better performance)")
     
     # Check if configuration is reasonable for dataset size
     total_tokens_needed = batch_size * sequence_length
