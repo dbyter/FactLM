@@ -34,7 +34,7 @@ def get_default_model_config(vocab_size, d_model=None):
     }
 
 
-def generate_text(model, start_string, max_length, temperature=0.8, tokenizer=None, repetition_penalty=1.2, top_k=50, top_p=0.9, debug=False):
+def generate_text(model, start_string, max_length, temperature=0.8, tokenizer=None, repetition_penalty=1.2, top_k=50, top_p=0.9, debug=False, show_progress=True):
     """Generate text using the trained model with advanced sampling and anti-repetition"""
     model.eval()
     device = next(model.parameters()).device
@@ -56,6 +56,10 @@ def generate_text(model, start_string, max_length, temperature=0.8, tokenizer=No
         print(f"📝 Input tokens: {tokens}")
         print(f"📝 Input decoded: '{tokenizer.decode(tokens)}'")
         print("=" * 80)
+    
+    # Print the starting prompt
+    if show_progress:
+        print(f"Prompt: {start_string}", end="", flush=True)
     
     with torch.no_grad():
         for step in range(max_length):
@@ -139,10 +143,19 @@ def generate_text(model, start_string, max_length, temperature=0.8, tokenizer=No
             
             # Add token to sequence
             generated_tokens = torch.cat([generated_tokens, next_token.unsqueeze(0)], dim=1)
+            
+            # Print word-by-word progress
+            if show_progress and not debug:
+                # Decode just the new token
+                new_token_text = tokenizer.decode([next_token.item()], skip_special_tokens=True)
+                print(new_token_text, end="", flush=True)
     
     # Decode the generated tokens
     generated_tokens = generated_tokens[0].cpu().tolist()
     final_text = tokenizer.decode(generated_tokens, skip_special_tokens=True)
+    
+    if show_progress and not debug:
+        print()  # New line after generation
     
     if debug:
         print("=" * 80)
@@ -376,17 +389,6 @@ def main():
     model.to(device)
     print(f"Using device: {device} ({device_name})")
     
-    # Predefined test prompts
-    test_prompts = [
-        "The nature of truth",
-        "In matters of justice",
-        "Society must consider",
-        "What is the meaning of",
-        "Where do we find",
-        "How can we understand",
-        "The question of morality"
-    ]
-    
     print("\n" + "="*60)
     print("FACTLM TEXT GENERATION")
     print("="*60)
@@ -418,53 +420,6 @@ def main():
             "description": "More diverse, creative, and experimental outputs"
         }
     }
-    
-    # Test with predefined prompts using all configurations
-    print("\n🤖 Testing with predefined prompts (all sampling modes):")
-    
-    # First, do a quick test with a specific prompt (no debug output)
-    debug_prompt = "What is artificial intelligence"
-    print(f"\n🧪 Quick test with '{debug_prompt}'")
-    print("=" * 60)
-    
-    debug_generated = generate_text(
-        model=model,
-        start_string=debug_prompt,
-        max_length=2048,  # Much longer for detailed debugging
-        temperature=0.8,
-        repetition_penalty=1.1,
-        top_k=50,
-        top_p=0.9,
-        tokenizer=tokenizer,
-        debug=False  # Disable debug mode for cleaner output
-    )
-    print(f"Generated: {debug_generated}")
-    
-    print(f"\n" + "="*60)
-    print("🤖 Regular Testing (all sampling modes):")
-    print("="*60)
-    
-    for config_name, config in sampling_configs.items():
-        print(f"\n{'='*40}")
-        print(f"🎯 {config['name']}")
-        print(f"   {config['description']}")
-        print(f"   Settings: temp={config['temperature']}, rep_penalty={config['repetition_penalty']}, top_k={config['top_k']}, top_p={config['top_p']}")
-        print('='*40)
-        
-        for prompt in test_prompts[:2]:  # Test first 2 prompts per config
-            print(f"\nPrompt: '{prompt}'")
-            
-            generated = generate_text(
-                model=model,
-                start_string=prompt,
-                max_length=2048,  # Much longer for comprehensive responses
-                temperature=config["temperature"],
-                repetition_penalty=config["repetition_penalty"],
-                top_k=config["top_k"],
-                top_p=config["top_p"],
-                tokenizer=tokenizer
-            )
-            print(f"  Generated: {generated}")
     
     # Interactive mode with configuration selection
     print(f"\n{'='*60}")
@@ -503,7 +458,7 @@ def main():
                     debug_generated = generate_text(
                         model=model,
                         start_string=debug_prompt,
-                        max_length=2048,  # Much longer for multi-sentence debugging
+                        max_length=1024,  # Shorter for debugging
                         temperature=current_settings["temperature"],
                         repetition_penalty=current_settings["repetition_penalty"],
                         top_k=current_settings["top_k"],
@@ -546,7 +501,7 @@ def main():
             generated = generate_text(
                 model=model,
                 start_string=user_input,
-                max_length=2048,  # Much longer for comprehensive responses
+                max_length=1024,  # Shorter for faster responses
                 temperature=current_settings["temperature"],
                 repetition_penalty=current_settings["repetition_penalty"],
                 top_k=current_settings["top_k"],
