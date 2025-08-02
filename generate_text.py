@@ -137,43 +137,8 @@ def generate_text(model, start_string, max_length, temperature=0.8, tokenizer=No
                     print(f"   🛑 Stopping: EOS token detected")
                 break
             
-            # Enhanced repetition detection - much more aggressive for quality
-            if step > 2:  # Start checking very early for nonsense
-                generated_list = generated_tokens[0].tolist()
-                current_text = tokenizer.decode(generated_tokens[0], skip_special_tokens=True)
-                
-                # Check for immediate token repetition (same token 3+ times in a row)
-                if len(generated_list) >= 3:
-                    if generated_list[-1] == generated_list[-2] == generated_list[-3]:
-                        if debug:
-                            print(f"   🛑 Stopping: Immediate token repetition detected")
-                        break
-                
-                # Stop on natural sentence endings (much less aggressive - allow multiple sentences)
-                if step > 100:  # Only after substantial generation
-                    if any(current_text.rstrip().endswith(punct) for punct in ['.', '!', '?']):
-                        # Count sentences to allow multiple sentences
-                        sentence_count = sum(current_text.count(p) for p in ['.', '!', '?'])
-                        if sentence_count >= 3:  # Allow at least 3 sentences
-                            if debug:
-                                print(f"   🛑 Stopping: Multiple sentences completed ({sentence_count} sentences)")
-                            break
-            
             # Add token to sequence
             generated_tokens = torch.cat([generated_tokens, next_token.unsqueeze(0)], dim=1)
-            
-            # Multi-sentence ending detection (much less aggressive)
-            if step > 80:  # Only after generating substantial text
-                current_text = tokenizer.decode(generated_tokens[0], skip_special_tokens=True)
-                
-                # Check if we have multiple completed sentences with substantial content
-                if any(current_text.rstrip().endswith(punct) for punct in ['.', '!', '?']):
-                    sentence_count = sum(current_text.count(p) for p in ['.', '!', '?'])
-                    word_count = len(current_text.split())
-                    if sentence_count >= 2 and word_count >= 50:  # At least 2 sentences and 50 words
-                        if debug:
-                            print(f"   🛑 Stopping: Multiple sentences with substantial content ({sentence_count} sentences, {word_count} words)")
-                        break
     
     # Decode the generated tokens
     generated_tokens = generated_tokens[0].cpu().tolist()
@@ -457,22 +422,23 @@ def main():
     # Test with predefined prompts using all configurations
     print("\n🤖 Testing with predefined prompts (all sampling modes):")
     
-    # First, do a debug test with a specific prompt
+    # First, do a quick test with a specific prompt (no debug output)
     debug_prompt = "What is artificial intelligence"
-    print(f"\n🔍 DEBUG TEST: Token-level analysis for '{debug_prompt}'")
+    print(f"\n🧪 Quick test with '{debug_prompt}'")
     print("=" * 60)
     
     debug_generated = generate_text(
         model=model,
         start_string=debug_prompt,
-        max_length=100,  # Longer for detailed debugging
+        max_length=2048,  # Much longer for detailed debugging
         temperature=0.8,
         repetition_penalty=1.1,
         top_k=50,
         top_p=0.9,
         tokenizer=tokenizer,
-        debug=True  # Enable debug mode
+        debug=False  # Disable debug mode for cleaner output
     )
+    print(f"Generated: {debug_generated}")
     
     print(f"\n" + "="*60)
     print("🤖 Regular Testing (all sampling modes):")
@@ -491,7 +457,7 @@ def main():
             generated = generate_text(
                 model=model,
                 start_string=prompt,
-                max_length=150,  # Allow for multiple sentences
+                max_length=2048,  # Much longer for comprehensive responses
                 temperature=config["temperature"],
                 repetition_penalty=config["repetition_penalty"],
                 top_k=config["top_k"],
@@ -537,7 +503,7 @@ def main():
                     debug_generated = generate_text(
                         model=model,
                         start_string=debug_prompt,
-                        max_length=120,  # Longer for multi-sentence debugging
+                        max_length=2048,  # Much longer for multi-sentence debugging
                         temperature=current_settings["temperature"],
                         repetition_penalty=current_settings["repetition_penalty"],
                         top_k=current_settings["top_k"],
@@ -580,7 +546,7 @@ def main():
             generated = generate_text(
                 model=model,
                 start_string=user_input,
-                max_length=200,  # Allow for longer multi-sentence responses
+                max_length=2048,  # Much longer for comprehensive responses
                 temperature=current_settings["temperature"],
                 repetition_penalty=current_settings["repetition_penalty"],
                 top_k=current_settings["top_k"],
